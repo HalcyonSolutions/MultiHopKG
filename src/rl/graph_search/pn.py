@@ -10,14 +10,16 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import sys
 
-import multihopkg.utils.ops as ops
-from multihopkg.utils.ops import var_cuda, zeros_var_cuda
+import src.utils.ops as ops
+from src.utils.ops import var_cuda, zeros_var_cuda
 
 
 class GraphSearchPolicy(nn.Module):
     def __init__(self, args):
         super(GraphSearchPolicy, self).__init__()
+        print('\n**GraphSearchPolicy __init__ called')
         self.model = args.model
         self.relation_only = args.relation_only
 
@@ -29,6 +31,9 @@ class GraphSearchPolicy(nn.Module):
             self.action_dim = args.relation_dim
         else:
             self.action_dim = args.entity_dim + args.relation_dim
+        
+        print(f'self.action_dim: {self.action_dim}')
+    
         self.ff_dropout_rate = args.ff_dropout_rate
         self.rnn_dropout_rate = args.rnn_dropout_rate
         self.action_dropout_rate = args.action_dropout_rate
@@ -41,6 +46,17 @@ class GraphSearchPolicy(nn.Module):
         # Set policy network modules
         self.define_modules()
         self.initialize_modules()
+
+        # NN Layers
+        hidden_size = 400
+        self.mu_layer = nn.Linear(hidden_size, self.action_dim)
+        self.sigma_layer = nn.Linear(hidden_size, self.action_dim)
+
+        # The out put of self.mu_layer may look like this:
+        # tensor([[ 0.0000,  0.0000,  0.0000,  ...,  0.0000,  0.0000,  0.0000],
+        #         [ 0.0000,  0.0000,  0.0000,  ...,  0.0000,  0.0000,  0.0000],
+        #         [...., ....., .....]
+        # shape of self.mu_layer will be [batch_size, action_dim]
 
         # Fact network modules
         self.fn = None
@@ -65,7 +81,7 @@ class GraphSearchPolicy(nn.Module):
         :param merge_aspace_batch_outcome: If set, merge the transition probability distribution
             generated of different action space bucket into a single batch.
         :return
-            With aspace batching and without merging the outcomes:
+            With a space batching and without merging the outcomes:
                 db_outcomes: (Dynamic Batch) (action_space, action_dist)
                     action_space: (Batch) padded possible action indices
                     action_dist: (Batch) distribution over actions.
@@ -75,11 +91,14 @@ class GraphSearchPolicy(nn.Module):
                 action_dist: (Batch) distribution over actions.
                 entropy: (Batch) entropy of action distribution.
         """
+
+
         e_s, q, e_t, last_step, last_r, seen_nodes = obs
 
         # Representation of the current state (current node and other observations)
         Q = kg.get_relation_embeddings(q)
-        H = self.path[-1][0][-1, :, :]
+        H = self.path[-1][0][-1, :, :] 
+
         if self.relation_only:
             X = torch.cat([H, Q], dim=-1)
         elif self.relation_only_in_path:
@@ -97,13 +116,49 @@ class GraphSearchPolicy(nn.Module):
         X = self.W2(X)
         X2 = self.W2Dropout(X)
 
-        def policy_nn_fun(X2, action_space):
-            (r_space, e_space), action_mask = action_space
-            A = self.get_action_embedding((r_space, e_space), kg)
-            action_dist = F.softmax(
-                torch.squeeze(A @ torch.unsqueeze(X2, 2), 2) - (1 - action_mask) * ops.HUGE_INT, dim=-1)
-            # action_dist = ops.weighted_softmax(torch.squeeze(A @ torch.unsqueeze(X2, 2), 2), action_mask)
-            return action_dist, ops.entropy(action_dist)
+        #! Original policy_nn_fun
+        # def policy_nn_fun(X2, action_space):
+        #     (r_space, e_space), action_mask = action_space
+        #     A = self.get_action_embedding((r_space, e_space), kg)
+        #     action_dist = F.softmax(
+        #         torch.squeeze(A @ torch.unsqueeze(X2, 2), 2) - (1 - action_mask) * ops.HUGE_INT, dim=-1)
+        #     # action_dist = ops.weighted_softmax(torch.squeeze(A @ torch.unsqueeze(X2, 2), 2), action_mask)
+
+        #     # action_dist shape:  torch.Size([batch_size*num_rollouts, 401])
+        #     # entropy shape:  torch.Size([batch_size*num_rollouts])
+
+        #     return action_dist, ops.entropy(action_dist)
+
+
+        #! New policy_nn_fun
+        def policy_nn_fun(X2):
+            """
+            Shapes:
+                X2:        [batch_size*num_rollouts, action_dim]
+                mu:        [batch_size*num_rollouts, action_dim]
+                sigma:     [batch_size*num_rollouts, action_dim]
+                log_sigma: [batch_size*num_rollouts, action_dim]
+
+            Returns:
+                dist:      torch.distributions.Normal,
+                Normal(loc: torch.Size([batch_size*num_rollouts, action_dim]),
+                       scale: torch.Size([batch_size*num_rollouts, action_dim]))
+            """
+
+            # Get the mean and standard deviation of the normal distribution
+            mu = self.mu_layer(X2)
+            log_sigma = self.sigma_layer(X2)
+            log_sigma = torch.clamp(log_sigma, min=-20, max=2)
+            sigma = torch.exp(log_sigma)
+
+            # Create a normal distribution using the mean and standard deviation
+            # display mu, sigma
+            # print(f'average mu: {mu.mean()}')
+            # print(f'average sigma: {sigma.mean()}')
+            dist = torch.distributions.Normal(mu, sigma)
+            entropy = dist.entropy().sum(dim=-1)
+            return dist, entropy
+            
 
         def pad_and_cat_action_space(action_spaces, inv_offset):
             db_r_space, db_e_space, db_action_mask = [], [], []
@@ -143,11 +198,13 @@ class GraphSearchPolicy(nn.Module):
                 inv_offset = None
         else:
             action_space = self.get_action_space(e, obs, kg)
-            action_dist, entropy = policy_nn_fun(X2, action_space)
+            # action_dist, entropy = policy_nn_fun(X2, action_space)
+            action_dist, entropy = policy_nn_fun(X2)
             db_outcomes = [(action_space, action_dist)]
             inv_offset = None
 
-        return db_outcomes, inv_offset, entropy
+        # return db_outcomes, inv_offset, entropy
+        return db_outcomes, inv_offset
 
     def initialize_path(self, init_action, kg):
         # [batch_size, action_dim]

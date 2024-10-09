@@ -7,14 +7,12 @@
  Policy gradient (REINFORCE algorithm) training and inference.
 """
 
-from typing import List
-import torch
+import torch, sys
 
-from multihopkg.learn_framework import LFramework
-import multihopkg.rl.graph_search.beam_search as search
-import multihopkg.utils.ops as ops
-from multihopkg.utils.ops import int_fill_var_cuda, var_cuda, zeros_var_cuda
-from transformers import BertTokenizer, BertModel
+from src.learn_framework import LFramework
+import src.rl.graph_search.beam_search as search
+import src.utils.ops as ops
+from src.utils.ops import int_fill_var_cuda, var_cuda, zeros_var_cuda
 
 
 class PolicyGradient(LFramework):
@@ -102,7 +100,6 @@ class PolicyGradient(LFramework):
 
         return loss_dict
 
-    # LGN: Roll out as in: "Roll out an entire episode.
     def rollout(self, e_s, q, e_t, num_steps, visualize_action_probs=False):
         """
         Perform multi-step rollout from the source entity conditioned on the query relation.
@@ -117,6 +114,7 @@ class PolicyGradient(LFramework):
         :return log_path_prob: Log probability of the sampled path.
         :return action_entropy: Entropy regularization term.
         """
+
         assert (num_steps > 0)
         kg, pn = self.kg, self.mdl
 
@@ -133,13 +131,17 @@ class PolicyGradient(LFramework):
         for t in range(num_steps):
             last_r, e = path_trace[-1]
             obs = [e_s, q, e_t, t==(num_steps-1), last_r, seen_nodes]
-            db_outcomes, inv_offset, policy_entropy = pn.transit(
+            # db_outcomes, inv_offset, policy_entropy = pn.transit(
+                # e, obs, kg, use_action_space_bucketing=self.use_action_space_bucketing)
+            db_outcomes, inv_offset = pn.transit(
                 e, obs, kg, use_action_space_bucketing=self.use_action_space_bucketing)
-            sample_outcome = self.sample_action(db_outcomes, inv_offset)
+            sample_outcome, policy_entropy = self.sample_action(db_outcomes, inv_offset)
+
             action = sample_outcome['action_sample']
             pn.update_path(action, kg)
             action_prob = sample_outcome['action_prob']
             log_action_probs.append(ops.safe_log(action_prob))
+            # action_entropy.append(policy_entropy)
             action_entropy.append(policy_entropy)
             seen_nodes = torch.cat([seen_nodes, e.unsqueeze(1)], dim=1)
             path_trace.append(action)
@@ -174,6 +176,7 @@ class PolicyGradient(LFramework):
         :return action_prob: Probability of the sampled action.
         """
 
+        #TODO: Working on improving this currently
         def apply_action_dropout_mask(action_dist, action_mask):
             if self.action_dropout_rate > 0:
                 rand = torch.rand(action_dist.size())
@@ -187,17 +190,70 @@ class PolicyGradient(LFramework):
             else:
                 return action_dist
 
+        #! Original function sample
+        # def sample(action_space, action_dist):
+        #     sample_outcome = {}
+        #     ((r_space, e_space), action_mask) = action_space
+        #     sample_action_dist = apply_action_dropout_mask(action_dist, action_mask)
+        #     print('sample_action_dist:', sample_action_dist.shape)
+        #     sys.exit()
+        #     idx = torch.multinomial(sample_action_dist, 1, replacement=True)
+        #     next_r = ops.batch_lookup(r_space, idx)
+        #     next_e = ops.batch_lookup(e_space, idx)
+        #     action_prob = ops.batch_lookup(action_dist, idx)
+        #     sample_outcome['action_sample'] = (next_r, next_e)
+        #     sample_outcome['action_prob'] = action_prob
+
+        #     # next_r:       torch.Size([batch_size*num_rollouts])
+        #     # next_e:       torch.Size([batch_size*num_rollouts])
+        #     # action_prob:  torch.Size([batch_size*num_rollouts])
+
+        #     return sample_outcome
+
+        #! New function similarity_check
+        def similarity_check(x_space, continuous_action):
+            """
+            Find what x_space elements is similar to continuous_action.
+            
+            Input shapes:
+                x_space:            torch.Size([batch_size*num_rollouts, num_actions+1])
+                continuous_action:  torch.Size([batch_size*num_rollouts, num_actions])
+
+            Return:
+                torch.Size([batch_size*num_rollouts])
+            """
+            # Check what element in the x_space is similar to the continuous_action
+            # To do so, use the cosine similarity
+
+            # padd continuous_action with zeros, on device
+            device = 'cuda'
+            continuous_action = torch.cat((continuous_action, torch.zeros(continuous_action.shape[0], 1).to(device)), dim=1)
+
+            x_space = x_space.view(-1, 1)
+            differences = x_space - continuous_action
+            similarity_score = torch.sum(differences, dim=1)
+            most_similar = torch.argmax(similarity_score)
+
+            x_space_element = x_space[most_similar]
+            return x_space_element
+        
+        #! New function sample
         def sample(action_space, action_dist):
-            sample_outcome = {}
             ((r_space, e_space), action_mask) = action_space
-            sample_action_dist = apply_action_dropout_mask(action_dist, action_mask)
-            idx = torch.multinomial(sample_action_dist, 1, replacement=True)
-            next_r = ops.batch_lookup(r_space, idx)
-            next_e = ops.batch_lookup(e_space, idx)
-            action_prob = ops.batch_lookup(action_dist, idx)
+            
+            actions = action_dist.rsample()
+            next_r = similarity_check(r_space, actions)
+            next_e = similarity_check(e_space, actions)
+
+            log_prob = action_dist.log_prob(actions).sum(dim=-1)
+            
+            sample_outcome = {}
             sample_outcome['action_sample'] = (next_r, next_e)
-            sample_outcome['action_prob'] = action_prob
-            return sample_outcome
+            sample_outcome['action_prob'] = log_prob
+            log_prob = action_dist.log_prob(actions).sum(dim=-1)
+            entropy = action_dist.entropy().sum(dim=-1)
+
+            return sample_outcome, entropy
 
         if inv_offset is not None:
             next_r_list = []
@@ -259,7 +315,7 @@ class PolicyGradient(LFramework):
             path_recorder = self.path_types
             for j in range(path_trace_mat.shape[1]):
                 e = path_trace_mat[i, j]
-                if e not in path_recorder:
+                if not e in path_recorder:
                     if j == path_trace_mat.shape[1] - 1:
                         path_recorder[e] = 1
                         self.num_path_types += 1
