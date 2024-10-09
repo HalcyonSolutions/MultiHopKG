@@ -107,6 +107,7 @@ ENV/
 neuralsp/wombat/data/
 
 # Misc
+Makefile
 *.pdf
 .nfs*
 *.swp
