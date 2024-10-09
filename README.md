@@ -1,3 +1,14 @@
+# Nura:
+
+For now the code can sample and choose `next_r`, and `next_e` from the continuous action space.
+
+However, I'm still not sure if it does it in a way that is meaningful. Still working on this, at least I want to see the RL agent peformance improve.
+
+Main takeaways:
+- I tried to keep all changes documented, find them by `#!`
+- Changes made are mostly in the `pn.py` and `pg.py`
+- I only tested the code using `use_action_space_bucketing='False'`, `num_rollouts=1`, `batch_size='1'`
+
 # Multi-Hop Knowledge Graph Reasoning with Reward Shaping
 
 This is the official code release of the following paper: 
