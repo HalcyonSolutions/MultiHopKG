@@ -8,6 +8,7 @@ Main takeaways:
 - I tried to keep all changes documented, find them by `#!`
 - Changes made are mostly in the `pn.py` and `pg.py`
 - I only tested the code using `use_action_space_bucketing='False'`, `num_rollouts=1`, `batch_size='1'`
+- Modified `fb15k-237.sh`, run using `./experiment.sh configs/fb15k-237.sh --train 0`
 
 # Multi-Hop Knowledge Graph Reasoning with Reward Shaping
 
