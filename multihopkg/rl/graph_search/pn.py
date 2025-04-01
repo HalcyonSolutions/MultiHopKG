@@ -635,7 +635,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # ! Restraining the movement to the neighborhood
 
-        self.current_position = self.knowledge_graph.flexible_forward_rotate(
+        self.current_position = self.knowledge_graph.flexible_forward(
             self.current_position, actions, 
         )
 

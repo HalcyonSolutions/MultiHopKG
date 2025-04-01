@@ -530,6 +530,57 @@ class KGEModel(nn.Module):
 
         return torch.cat([re_est_tail, im_est_tail], dim=-1)
 
+    def flexible_forward_protate(
+        self, cur_states: torch.Tensor, cur_actions: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Applies a phase rotation to the head entity given the relation. 
+        This is meant to work on the original RotatE model.
+        """
+        head_rad = cur_states/(self.embedding_range.item()/torch.pi)
+        
+        rotation_rad = self.pRotatE_Eval(head_rad, cur_actions)        # apply the phase rotation, result in rads   
+
+        # TODO: VERY IMPORTANT: Verify if this doesn't break the learning process
+        # ! Observation: If there is no normalization, there is NaN somewhere in the log_prob or rewards
+        rotation_rad = torch.atan2(torch.sin(rotation_rad), torch.cos(rotation_rad)) # normalize the angle to [-pi, pi] since it is cyclic
+
+        return rotation_rad * (self.embedding_range.item()/torch.pi)
+
+    def pRotatE_Eval(self, phase_head, relation):
+        """
+        Calculates the phase rotation of the head entity given the relation. 
+        Assumes that the entity is represented as a phase in radians (not a complex number).
+        
+        args:
+            phase_head: torch.Tensor. Phase of the head embedding (in radians)
+            relation: torch.Tensor
+
+        returns:
+            torch.Tensor. Phase of the translated head embedding (in radians). Not limited to [-pi, pi]
+        """
+        
+        #Make phases of entities and relations uniformly distributed in [-pi, pi]
+        phase_relation = relation/(self.embedding_range.item()/torch.pi)
+
+        phase_translation = phase_head + phase_relation
+
+        return phase_translation
+
+    def flexible_forward(self, cur_states: torch.Tensor, cur_actions: torch.Tensor) -> torch.Tensor:
+        """
+        Execute the flexible forward pass for the model.
+        This function is used for the flexible action space.
+        """
+
+        flexible_func = {
+            "RotatE": self.flexible_forward_rotate,
+            "pRotatE": self.flexible_forward_protate,
+        }
+        
+        return flexible_func[self.model_name](cur_states, cur_actions)
+
+
     def get_centroid(self) -> torch.Tensor:
         self.centroid = sample_random_entity(self.entity_embedding)
         return self.centroid
