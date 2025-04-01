@@ -274,14 +274,13 @@ class KGEModel(nn.Module):
         return score
 
     def RotatE(self, head, relation, tail, mode):
-        pi = 3.14159265358979323846
         
         re_head, im_head = torch.chunk(head, 2, dim=2)
         re_tail, im_tail = torch.chunk(tail, 2, dim=2)
 
         #Make phases of relations uniformly distributed in [-pi, pi]
 
-        phase_relation = relation/(self.embedding_range.item()/pi)
+        phase_relation = relation/(self.embedding_range.item()/torch.pi)
 
         re_relation = torch.cos(phase_relation)
         im_relation = torch.sin(phase_relation)
@@ -304,13 +303,12 @@ class KGEModel(nn.Module):
         return score
 
     def pRotatE(self, head, relation, tail, mode):
-        pi = 3.14159262358979323846
         
         #Make phases of entities and relations uniformly distributed in [-pi, pi]
 
-        phase_head = head/(self.embedding_range.item()/pi)
-        phase_relation = relation/(self.embedding_range.item()/pi)
-        phase_tail = tail/(self.embedding_range.item()/pi)
+        phase_head = head/(self.embedding_range.item()/torch.pi)
+        phase_relation = relation/(self.embedding_range.item()/torch.pi)
+        phase_tail = tail/(self.embedding_range.item()/torch.pi)
 
         if mode == 'head-batch':
             score = phase_head + (phase_relation - phase_tail)
@@ -519,11 +517,10 @@ class KGEModel(nn.Module):
         return tail
 
     def RotatE_Eval(self, head, relation):
-        pi = 3.14159265358979323846
 
         re_head, im_head = torch.chunk(head, 2, dim=1)
 
-        phase_relation = relation / (self.embedding_range.item() / pi)
+        phase_relation = relation / (self.embedding_range.item() / torch.pi)
 
         re_relation = torch.cos(phase_relation)
         im_relation = torch.sin(phase_relation)
@@ -754,11 +751,10 @@ class LegacyKGEModel(nn.Module):
         return score
 
     def RotatE_Eval(self, head, relation):
-        pi = 3.14159265358979323846
 
         re_head, im_head = torch.chunk(head, 2, dim=1)
 
-        phase_relation = relation / (self.embedding_range.item() / pi)
+        phase_relation = relation / (self.embedding_range.item() / torch.pi)
 
         re_relation = torch.cos(phase_relation)
         im_relation = torch.sin(phase_relation)
@@ -769,14 +765,13 @@ class LegacyKGEModel(nn.Module):
         return torch.cat([re_est_tail, im_est_tail], dim=-1)
 
     def RotatE(self, head, relation, tail, mode):
-        pi = 3.14159265358979323846
 
         re_head, im_head = torch.chunk(head, 2, dim=2)
         re_tail, im_tail = torch.chunk(tail, 2, dim=2)
 
         # Make phases of relations uniformly distributed in [-pi, pi]
 
-        phase_relation = relation / (self.embedding_range.item() / pi)
+        phase_relation = relation / (self.embedding_range.item() / torch.pi)
 
         re_relation = torch.cos(phase_relation)
         im_relation = torch.sin(phase_relation)
@@ -799,13 +794,12 @@ class LegacyKGEModel(nn.Module):
         return score
 
     def pRotatE(self, head, relation, tail, mode):
-        pi = 3.14159262358979323846
 
         # Make phases of entities and relations uniformly distributed in [-pi, pi]
 
-        phase_head = head / (self.embedding_range.item() / pi)
-        phase_relation = relation / (self.embedding_range.item() / pi)
-        phase_tail = tail / (self.embedding_range.item() / pi)
+        phase_head = head / (self.embedding_range.item() / torch.pi)
+        phase_relation = relation / (self.embedding_range.item() / torch.pi)
+        phase_tail = tail / (self.embedding_range.item() / torch.pi)
 
         if mode == "head-batch":
             score = phase_head + (phase_relation - phase_tail)
