@@ -32,6 +32,7 @@ import pdb
 from typing import Tuple
 import sys
 
+from multihopkg.emb.operations import angular_difference
 
 class ANN_IndexMan:
     """
@@ -117,6 +118,83 @@ class ANN_IndexMan:
 
         return resulting_embeddings, indices
         # return indices
+
+    def calculate_hits_at_n(
+        self, ground_truth: np.ndarray, indices: np.ndarray, topk: int
+    ) -> float:
+        assert (
+            topk <= indices.shape[1]
+        ), "Topk must be smaller or equal than the size of index length"
+        """
+        Calculates the hit@N score, which is the fraction of queries where the correct index is within the top N nearest neighbors.
+
+        Args:
+            ground_truth (np.ndarray): Array of ground truth indices for each query.
+            indices (np.ndarray): 2D array of indices returned from a nearest-neighbor search (shape: [num_queries, topk]).
+            topk (int): Number of top results to consider for a hit.
+
+        Returns:
+            float: The hit@N score.
+        """
+        hits_at_n = sum(
+            [1 for i, gt in enumerate(ground_truth) if gt in indices[i, :topk]]
+        )
+        hit_at_n_score = hits_at_n / len(ground_truth)
+        return hit_at_n_score
+
+# TODO: Improve the implementation, it is currently very slow
+class ANN_IndexMan_pRotatE:
+    """
+    """
+
+    def __init__(
+        self,
+        embeddings_weigths: torch.Tensor,
+        embedding_range: float = 1.0,
+    ):
+        """
+        """
+        self.embedding_range = embedding_range
+        self.embedding_vectors = (embeddings_weigths/(self.embedding_range/torch.pi)).detach().cpu().float().unsqueeze(0) # [1, embedding_num, embedding_dim]
+
+    def search(
+        self, target_embeddings: torch.Tensor, topk
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        """
+        assert isinstance(
+            target_embeddings, torch.Tensor
+        ), "Target embeddings must be a torch.Tensor"
+
+        assert len(target_embeddings.shape) < 3, "Target embeddings must be a 2D array"
+        if len(target_embeddings.shape) == 2:
+            target_embeddings = target_embeddings.unsqueeze(1) #[batch_size, 1, embedding_dim]
+        else:
+            target_embeddings = target_embeddings.unsqueeze(0).unsqueeze(0) #[1, 1, embedding_dim]
+
+        # Check if tensors are on cuda, if so, move them to cpu
+        if target_embeddings.is_cuda:
+            target_embeddings = target_embeddings.cpu()
+
+        target_embeddings = target_embeddings/(self.embedding_range/torch.pi)
+
+        diff = target_embeddings - self.embedding_vectors # [batch_size, embedding_num, embedding_dim]
+
+        distances = angular_difference(target_embeddings, self.embedding_vectors, smooth=False).norm(dim=-1)
+
+        distances, indices = torch.sort(distances, dim=-1, descending=False)
+
+        distances = distances[:, :topk]
+        indices = indices[:, :topk]
+
+        resulting_embeddings = self.embedding_vectors[0, indices.squeeze(), :] * (self.embedding_range/torch.pi)
+
+        return resulting_embeddings, indices
+
+    def get_embedding(self, indices: torch.Tensor) -> torch.Tensor:
+        """
+        """
+        return self.embedding_vectors[0, indices.squeeze(), :] * (self.embedding_range/torch.pi)
 
     def calculate_hits_at_n(
         self, ground_truth: np.ndarray, indices: np.ndarray, topk: int
