@@ -6,7 +6,7 @@ from __future__ import print_function
 
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Union
 
 import numpy as np
 
@@ -78,6 +78,8 @@ class KGEModel(nn.Module):
 
         if model_name == 'ComplEx' and (not double_entity_embedding or not double_relation_embedding):
             raise ValueError('ComplEx should use --double_entity_embedding and --double_relation_embedding')
+        
+        self.centroid = calculate_entity_centroid(self.entity_embedding)
 
     def load_embeddings(self, entity_embedding: np.ndarray, relation_embedding: np.ndarray):
         '''
@@ -580,9 +582,7 @@ class KGEModel(nn.Module):
         
         return flexible_func[self.model_name](cur_states, cur_actions)
 
-
     def get_centroid(self) -> torch.Tensor:
-        self.centroid = sample_random_entity(self.entity_embedding)
         return self.centroid
 
     def get_entity_dim(self):
@@ -603,7 +603,49 @@ class KGEModel(nn.Module):
         ), "The relation embedding must be either a nn.Parameter or nn.Embedding"
         return self.relation_embedding
 
+    def get_starting_embedding(self, startType: str = 'centroid', ent_id: int = None)   -> torch.Tensor:
+        """
+        Returns the starting point for the navigation.
+            
+            :param startType: The type of starting point to use. Options are 'centroid', 'random', 'relevant'
+            :param ent_id: The entity id to use as the starting point if 'relevant' is chosen.
+            :return: The starting point for the navigation.
+        """
+        if startType == 'centroid':
+            return self.get_centroid()
+        elif startType == 'random':
+            return sample_random_entity(self.entity_embedding)
+        elif startType == 'relevant' and not (isinstance(ent_id, type(None))):
+            return get_embeddings_from_indices(self.entity_embedding, ent_id)
+        else:
+            raise Warning("Invalid navigation starting type/point. Using centroid instead.")
+            return self.centroid
 
+def get_embeddings_from_indices(embeddings: Union[nn.Embedding, nn.Parameter], indices: torch.Tensor) -> torch.Tensor:
+    """
+    Given a tensor of indices, returns the embeddings of the corresponding rows.
+
+    Args:
+        embeddings (Union[nn.Embedding, nn.Parameter]): The embedding matrix.
+        indices (torch.Tensor): A tensor of indices.
+
+    Returns:
+        torch.Tensor: The embeddings corresponding to the given indices.
+    """
+
+    if isinstance(embeddings, nn.Parameter):
+        return embeddings.data[indices]
+    elif isinstance(embeddings, nn.Embedding):
+        return embeddings.weight.data[indices]
+    else:
+        raise TypeError("Embeddings must be either nn.Parameter or nn.Embedding")
+
+def calculate_entity_centroid(embeddings: Union[nn.Embedding, nn.Parameter]):
+    if isinstance(embeddings, nn.Parameter):
+        entity_centroid = torch.mean(embeddings.data, dim=0)
+    elif isinstance(embeddings, nn.Embedding):
+        entity_centroid = torch.mean(embeddings.weight.data, dim=0)
+    return entity_centroid
 
 class LegacyKGEModel(nn.Module):
     def __init__(

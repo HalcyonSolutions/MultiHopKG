@@ -66,7 +66,8 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--raw_QAData_path', type=str, default="./data/FB15k/freebaseqa_clean.csv", help="Directory where the QA knowledge graph data is stored (default: None)")
     ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/freebaseqa_clean.json", help="Path for precomputed QA knowledge graph data. Precomputing is mostly tokenizaiton.")
     ap.add_argument('--force_data_prepro', '-f', action="store_true", help="Force the data prepro to run even if the data is already cached.")
-    
+    ap.add_argument('--nav_start_emb_type', type=str, default="centroid", help="The starting position of the navigator in the graph. Can be 'centroid', 'random', or 'relevant' (default: centroid)")
+
     # Entity and Relationship Human Readability
     ap.add_argument('--node_data_path', type=str, default='./data/FB15k/node_data.csv', help='Path to the CSV file containing the name mapping for the entity.')
     ap.add_argument('--node_data_key', type=str, default='MID', help='Special key type used for the entity. i.e., MID for FB15k or RDF for Qid for Fb-Wiki.')
@@ -117,7 +118,7 @@ def get_args() -> argparse.Namespace:
                     help='root directory where the model parameters are stored (default: None)')
     ap.add_argument('--model_dir', type=str, default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'model'),
                     help='directory where the model parameters are stored (default: None)')
-    ap.add_argument('--trained_model_path', type=str, default="./models/protatE_FBWikiV4/")
+    ap.add_argument('--trained_model_path', type=str, default="./models/protatE_FB15k/")
     ap.add_argument('--use_action_space_bucketing', action='store_true',
                     help='bucket adjacency list by outgoing degree to avoid memory blow-up (default: False)')
     ap.add_argument('--train_entire_graph', type=bool, default=False,

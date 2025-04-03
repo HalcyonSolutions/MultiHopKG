@@ -14,8 +14,9 @@ import os
 import pdb
 import pickle
 from datetime import datetime
-from typing import Any, Dict, Optional, Sequence, List, Tuple
+from typing import Any, Dict, Optional, Sequence, List, Tuple, Union
 import re
+import ast
 
 import numpy as np
 import pandas as pd
@@ -583,12 +584,38 @@ def load_configs(args, config_path):
                 raise ValueError("Unrecognized argument: {}".format(arg_name))
     return args
 
+def extract_literals(column: Union[str, pd.Series], flatten: bool = False) -> Union[pd.Series, List[str]]:
+    """
+    Extracts the list of string literals from each entry in the provided column (Pandas Series or string)
+    using ast.literal_eval. Optionally flattens the extracted lists into a single list if 'flatten' is set to True.
+
+    Args:
+        column (Union[str, pd.Series]): The column containing string representations of lists. Can be a
+                                        Pandas Series or a string representation of a list.
+        flatten (bool): If True, flattens the lists into a single list. Default is False.
+
+    Returns:
+        Union[pd.Series, List[str]]: A Pandas Series of lists if flatten is False, otherwise a single flattened list of strings.
+    """
+
+    # Convert the input to a Pandas Series if it's a string
+    if isinstance(column, str):
+        column = pd.Series([column])
+
+    # Convert string representations of lists into actual Python lists
+    column = column.apply(ast.literal_eval)
+
+    # Flatten the lists if the flatten argument is True
+    if flatten: column = [item for sublist in column for item in sublist]
+    return column
 
 def process_and_cache_triviaqa_data(
     raw_QAData_path: str,
     cached_toked_qatriples_metadata_path: str,
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
+    entity2id: Dict[str, int],
+    relation2id: Dict[str, int],
 ) -> Tuple[DFSplit, Dict] :
     """
     Args:
@@ -614,18 +641,18 @@ def process_and_cache_triviaqa_data(
     assert (
         len(csv_df.columns) > 2
     ), "The CSV file should have at least 2 columns. One triplet and one QA pair"
-    # FIX: The harcoding of things
-    question_col_idx = 1
-    answers_col_idx  = 2
+    
+    # FIX: The harcoding of things like "Question" and "Answer" is not good.
+    # !TODO: Make this more flexible and relavant entities and relations be optional features
+    questions = csv_df["Question"]
+    answers = csv_df["Answer"]
+    relevant_ent = extract_literals(csv_df["Relevant-Entities"]) # This is a list of entities per entry
+    relevant_rel = extract_literals(csv_df["Relevant-Relations"]) # This is a list of relations per entry
+    answer_ent = csv_df["Answer-Entity"]
 
     # Ensure directory exists
     dir_name = os.path.dirname(cached_toked_qatriples_metadata_path)
     os.makedirs(dir_name, exist_ok=True)
-
-    ## Prepare specific triplets/path
-    # paths = csv_df.iloc[:, 0] 
-    questions = csv_df.iloc[:, question_col_idx]  # Both Q and A
-    answers = csv_df.iloc[:, answers_col_idx]
 
     ## Prepare the language data
     questions = questions.map(lambda x: question_tokenizer.encode(x, add_special_tokens=False))
@@ -634,6 +661,11 @@ def process_and_cache_triviaqa_data(
         + answer_tokenizer.encode(x, add_special_tokens=False)
         + [answer_tokenizer.eos_token_id]
     )
+
+    # Preparing the KG data by converting text to indices
+    relevant_ent = relevant_ent.apply(lambda ents: [entity2id[ent] for ent in ents])
+    relevant_rel = relevant_rel.apply(lambda rels: [relation2id[rel] for rel in rels])
+    answer_ent = answer_ent.map(lambda ent: entity2id[ent])
 
     # timestamp without nanoseconds
     timestamp = str(int(datetime.now().timestamp()))
@@ -650,7 +682,7 @@ def process_and_cache_triviaqa_data(
 
     # Start amalgamating the data into its final form
     # TODO: test set
-    new_df = pd.concat([questions, answers], axis=1)
+    new_df = pd.concat([questions, answers, relevant_ent, relevant_rel, answer_ent], axis=1)
     new_df = new_df.sample(frac=1).reset_index(drop=True)
     train_df, test_df = train_test_split(new_df, test_size=0.2, random_state=42)
     dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=42)
@@ -667,8 +699,11 @@ def process_and_cache_triviaqa_data(
     metadata = {
         "question_tokenizer": question_tokenizer.name_or_path,
         "answer_tokenizer": answer_tokenizer.name_or_path,
-        "num_columns": question_col_idx + 1,
-        "question_column": question_col_idx,
+        "question_column": "Question",
+        "answer_column": "Answer",
+        "relevant_entities_column": "Relevant-Entities",
+        "relevant_relations_column": "Relevant-Relations",
+        "answer_entity_column": "Answer-Entity",
         "0-index_column": True,
         "date_processed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "saved_paths": cached_split_locations,

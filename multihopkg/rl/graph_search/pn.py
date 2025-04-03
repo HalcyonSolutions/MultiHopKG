@@ -23,6 +23,7 @@ from typing import Tuple, List, Dict, Optional
 import pdb
 
 import sys
+import random
 
 class GraphSearchPolicy(nn.Module):
     def __init__(
@@ -495,6 +496,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         history_num_layers: int,
         knowledge_graph: KGEModel,
         relation_dim: int,
+        nav_start_emb_type: str,
 
         node_data: str,
         node_data_key: str,
@@ -557,6 +559,9 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.current_step_no = (
             self.steps_in_episode
         )  # This value denotes being at "reset" state. As in, when episode is done
+
+        assert nav_start_emb_type in ['centroid', 'random', 'relevant'], f"Invalid start_embedding_type: {nav_start_emb_type}"
+        self.nav_start_emb_type = nav_start_emb_type
 
         ########################################
         # Get the actual torch modules defined
@@ -739,7 +744,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         return W1, W2, W1Dropout, W2Dropout, path_encoder
 
-    def reset(self, initial_states_info: torch.Tensor) -> Observation:
+    def reset(self, initial_states_info: torch.Tensor, relevant_ent: List[List[None]] = None) -> Observation:
         """
         Will reset the episode to the initial position
         This will happen by grabbign the initial_states_info embeddings, concatenating them with the centroid and then passing them to the environment
@@ -761,21 +766,43 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.current_questions_emb = initial_states_info  # (batch_size, emb_dim)
         self.current_step_no = 0
 
-        # Create more complete representation of state
-        centroid = self.knowledge_graph.get_centroid()
+        if self.nav_start_emb_type == 'centroid':
+            # Create more complete representation of state
+            centroid = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type)
 
-        tiled_centroids = centroid.unsqueeze(0).repeat(len(initial_states_info), 1)
+            init_emb = centroid.unsqueeze(0).repeat(len(initial_states_info), 1)
+
+            self.current_position = init_emb.clone()
+        elif self.nav_start_emb_type == 'random':
+            # Create more complete representation of state
+            random_pos = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type)
+
+            init_emb = random_pos.unsqueeze(0).repeat(len(initial_states_info), 1)
+
+            self.current_position = init_emb.clone()
+        elif self.nav_start_emb_type == 'relevant':
+            relevant_ent = torch.tensor([random.choice(sublist) for sublist in relevant_ent], dtype=torch.int)
+        
+            # Create more complete representation of state
+            init_emb = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, relevant_ent)
+
+            if init_emb.dim() == 1: init_emb = init_emb.unsqueeze(0)
+            assert init_emb.shape[0] == len(initial_states_info), "Error! Initial states info and relevant embeddings must have the same batch size."
+
+            self.current_position = init_emb.clone()
+        else:
+            raise NotImplementedError
 
         # ! Inspecting projections (gradients variance is too high from the start)
 
         # ! Approach 1: Normal Projection
         concatenations = torch.cat(
-            [self.current_questions_emb, tiled_centroids], dim=-1
+            [self.current_questions_emb, init_emb], dim=-1
         )
         projected_state = self.concat_projector(concatenations)
 
         # ! Approach 2: Attention Fusion (Gradients are not moving, must recheck)
-        # projected_state = self.concat_projector(self.current_questions_emb, tiled_centroids)
+        # projected_state = self.concat_projector(self.current_questions_emb, init_emb)
         
         # ! Approach 3: Normalization on the Projection (Reduces gradients variance, but still loses it.)
 
@@ -785,12 +812,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # This was for when we were receiving sequences. I mean I gues we still are.
         # projected_state = projected_concat
-
-        self.current_step = 0
-
-        self.current_position = centroid.unsqueeze(0).repeat(
-            len(initial_states_info), 1
-        )
 
         observation = Observation(
             position=self.current_position.detach().cpu().numpy(),
@@ -802,11 +823,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
         )
 
         return observation
-
-    def get_centroid(self) -> torch.Tensor:
-        if not self.centroid:
-            self.centroid = self.knowledge_graph.get_centroid()
-        return self.centroid
 
     # * This is Nura's code. Might not really bee kj
     def get_action_space(self, e, obs, kg):

@@ -472,7 +472,7 @@ class KnowledgeGraph(nn.Module):
     def dummy_start_r(self):
         return START_RELATION_ID
 
-
+@stale_code(reason="This class is redundant in the presence of KGEModel (the original KG Embedding Model)")
 class ITLKnowledgeGraph(nn.Module):
     """
     ITLKnowledgeGraph is a environment defined as a knowledge graph that is used *NOT* for training embeddings but rather for navigation.
