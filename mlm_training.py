@@ -100,8 +100,41 @@ def batch_loop_dev(
     pad_token_id: int,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
-    Specifically for computing any extra metrics on the dev set.
-    Otherwise, this is the same as `batch_loop`.
+    Executes a batch loop for the development set to compute additional evaluation metrics.
+    This function is similar to `batch_loop` but focuses on collecting metrics for debugging
+    and analysis during development.
+
+    During the batch loop:
+    - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions inside `rollout`.
+    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE).
+    - Evaluation metrics are collected for analysis.
+
+    This function is found within `evaluate_training` calls upon `rollout`.
+
+    Args:
+        env (ITLGraphEnvironment): 
+            The knowledge graph environment that provides observations, rewards, and state transitions.
+        mini_batch (pd.DataFrame): 
+            A batch of data containing questions, answers, relevant entities, and relations.
+        nav_agent (ContinuousPolicyGradient): 
+            The policy network responsible for deciding actions based on the current state.
+        hunch_llm (nn.Module): 
+            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
+        steps_in_episode (int): 
+            The number of steps to execute in each episode.
+        pad_token_id (int): 
+            The token ID used for padding sequences in the answer IDs.
+
+    Returns:
+        - `pg_loss` (torch.Tensor): 
+            The policy gradient loss computed for the batch.
+        - `eval_extras` (Dict[str, Any]): 
+            A dictionary containing additional evaluation metrics collected during the batch loop.
+
+
+    Notes:
+        - This function is specifically designed for development and debugging purposes.
+        - Rewards are normalized for stability before being used to compute the policy gradient loss.
     """
 
     ########################################
@@ -204,6 +237,46 @@ def batch_loop(
     eos_token_id: int,
     pad_token_id: int,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+    """
+    Executes a batch loop for training the navigation agent and language model.
+    This function performs reinforcement learning (RL) rollouts for a batch of data
+    and computes the policy gradient loss for training.
+
+    During the batch loop:
+    - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions inside `rollout`.
+    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE).
+    - The policy gradient loss is calculated based on the rewards and log probabilities of actions.
+
+    This function is found within `train_multihokg` and calls upon `rollout`.
+
+    Args:
+        env (ITLGraphEnvironment): 
+            The knowledge graph environment that provides observations, rewards, and state transitions.
+        mini_batch (pd.DataFrame): 
+            A batch of data containing questions, answers, relevant entities, and relations.
+        nav_agent (ContinuousPolicyGradient): 
+            The policy network responsible for deciding actions based on the current state.
+        hunch_llm (nn.Module): 
+            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
+        steps_in_episode (int): 
+            The number of steps to execute in each episode.
+        bos_token_id (int): 
+            The token ID representing the beginning of a sequence in the answer IDs.
+        eos_token_id (int): 
+            The token ID representing the end of a sequence in the answer IDs.
+        pad_token_id (int): 
+            The token ID used for padding sequences in the answer IDs.
+
+    Returns:
+        - `pg_loss` (torch.Tensor): 
+            The policy gradient loss computed for the batch.
+        - `eval_extras` (Dict[str, Any]): 
+            A dictionary containing additional evaluation metrics collected during the batch loop.
+
+    Notes:
+        - Rewards are normalized for stability before being used to compute the policy gradient loss.
+        - This function is designed for training and does not collect as many metrics as `batch_loop_dev`.
+    """
 
     ########################################
     # Start the batch loop with zero grad
@@ -305,7 +378,53 @@ def evaluate_training(
     iteration: int,
     answer_id: List[int] = None,
 ):
+    """
+    Evaluates the performance of the navigation agent and language model on the development set.
+    This function computes evaluation metrics, logs results, and optionally visualizes the evaluation process.
 
+    This function is found within `train_multihopkg` and is called periodically during training. 
+    This function calls upon `batch_loop_dev` and `dump_evaluation_metrics`.
+
+    Args:
+        env (ITLGraphEnvironment): 
+            The knowledge graph environment that provides observations, rewards, and state transitions.
+        dev_df (pd.DataFrame): 
+            The development dataset containing questions, answers, relevant entities, and relations.
+        nav_agent (ContinuousPolicyGradient): 
+            The policy network responsible for deciding actions based on the current state.
+        hunch_llm (nn.Module): 
+            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
+        steps_in_episode (int): 
+            The number of steps to execute in each episode.
+        batch_size_dev (int): 
+            The batch size for the development set.
+        batch_count (int): 
+            The current batch count during training.
+        verbose (bool): 
+            If `True`, additional information is logged for debugging purposes.
+        visualize (bool): 
+            If `True`, visualizations of the evaluation process are generated.
+        writer (SummaryWriter): 
+            A TensorBoard writer for logging metrics and visualizations.
+        question_tokenizer (PreTrainedTokenizer): 
+            The tokenizer used for processing questions.
+        answer_tokenizer (PreTrainedTokenizer): 
+            The tokenizer used for processing answers.
+        wandb_on (bool): 
+            If `True`, logs metrics to Weights & Biases (wandb).
+        iteration (int): 
+            The current iteration number, used for logging and tracking progress.
+        answer_id (List[int], optional): 
+            A list of IDs corresponding to the correct answer entities. Defaults to `None`.
+
+    Returns:
+        None
+
+    Notes:
+        - This function evaluates only the last batch of the development set.
+        - Metrics are logged to TensorBoard and optionally to wandb.
+        - The function ensures that the environment and models are in evaluation mode during the process.
+    """
     num_batches = len(dev_df) // batch_size_dev
     nav_agent.eval()
     hunch_llm.eval()
@@ -462,6 +581,68 @@ def train_multihopkg(
     num_batches_till_eval: int,
     wandb_on: bool,
 ):
+    """
+    Trains the navigation agent and language model using reinforcement learning (RL) on a knowledge graph environment.
+    This function performs training over multiple epochs and evaluates the model periodically on a development set.
+
+    During training:
+    - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions in `rollout`.
+    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE) in `batch_loop`.
+    - The policy gradient loss is calculated and used to update the model parameters.
+    - Evaluation is performed periodically using the `evaluate_training` function.
+
+    This function is found within `main` and is called to initiate the training process.
+    This function calls upon `batch_loop` and `evaluate_training`.
+
+    Args:
+        batch_size (int): 
+            The batch size for training.
+        batch_size_dev (int): 
+            The batch size for the development set.
+        epochs (int): 
+            The total number of epochs to train the model.
+        nav_agent (ContinuousPolicyGradient): 
+            The policy network responsible for deciding actions based on the current state.
+        hunch_llm (nn.Module): 
+            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
+        learning_rate (float): 
+            The learning rate for the optimizer.
+        steps_in_episode (int): 
+            The number of steps to execute in each episode.
+        env (ITLGraphEnvironment): 
+            The knowledge graph environment that provides observations, rewards, and state transitions.
+        start_epoch (int): 
+            The epoch to start training from (useful for resuming training).
+        train_data (pd.DataFrame): 
+            The training dataset containing questions, answers, relevant entities, and relations.
+        dev_df (pd.DataFrame): 
+            The development dataset for periodic evaluation.
+        mbatches_b4_eval (int): 
+            The number of mini-batches to process before performing evaluation.
+        verbose (bool): 
+            If `True`, additional information is logged for debugging purposes.
+        visualize (bool): 
+            If `True`, visualizations of gradients and weights histograms are tracked along with navigation movements.
+        question_tokenizer (PreTrainedTokenizer): 
+            The tokenizer used for processing questions.
+        answer_tokenizer (PreTrainedTokenizer): 
+            The tokenizer used for processing answers. Note: Not the same as the question tokenizer.
+        track_gradients (bool): 
+            If `True`, tracks and logs gradient information for debugging.
+        num_batches_till_eval (int): 
+            The number of batches to process before inspecting vanishing gradients.
+        wandb_on (bool): 
+            If `True`, logs metrics to Weights & Biases (wandb).
+
+    Returns:
+        None
+
+    Notes:
+        - The function uses reinforcement learning to train the navigation agent and language model.
+        - Periodic evaluation is performed using the `evaluate_training` function.
+        - Metrics and visualizations are logged to TensorBoard and optionally to wandb.
+        - The function ensures that the environment and models are in training mode during the process.
+    """
     # TODO: Get the rollout working
 
     # Print Model Parameters + Perhaps some more information
@@ -691,7 +872,7 @@ def calculate_llm_reward(
 
 def rollout(
     # TODO: self.mdl should point to (policy network)
-    steps_in_episode,
+    steps_in_episode: int,
     nav_agent: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
     env: ITLGraphEnvironment,
@@ -703,17 +884,44 @@ def rollout(
     dev_mode: bool = False,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], Dict[str, Any]]:
     """
-    Will execute RL episode rollouts in parallel.
+    Executes reinforcement learning (RL) episode rollouts in parallel for a given number of steps.
+    This function is the core of the training process, used by both `batch_loop` and `batch_loop_dev`.
+    
+    During the rollout:
+    - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions.
+    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE).
+    - Evaluation metrics are optionally collected in development mode (`dev_mode`).
+
     args:
-        kg: Knowledge graph environment.
-        num_steps: Number of rollout steps.
-        navigator_agent: Policy network.
-        graphman: Graph search policy network.
-        questions: Questions already pre-embedded to be answered (num_rollouts, question_dim)
-        visualize_action_probs: If set, save action probabilities for visualization.
+        steps_in_episode (int): 
+            The number of steps to execute in each episode.
+        nav_agent (ContinuousPolicyGradient): 
+            The policy network responsible for deciding actions based on the current state.
+        hunch_llm (nn.Module): 
+            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
+        env (ITLGraphEnvironment): 
+            The knowledge graph environment that provides observations, rewards, and state transitions.
+        questions_embeddings (torch.Tensor): 
+            Pre-embedded representations of the questions to be answered. Shape: (batch_size, embedding_dim).
+        answers_ids (torch.Tensor): 
+            Tokenized IDs of the correct answers. Shape: (batch_size, sequence_length).
+        relevant_entities (List[List[int]]): 
+            A list of relevant entities for each question, represented as lists of entity IDs.
+        relevant_rels (List[List[int]]): 
+            A list of relevant relations for each question, represented as lists of relation IDs.
+        answer_id (List[int]): 
+            A list of IDs corresponding to the correct answer entities.
+        dev_mode (bool, optional): 
+            If `True`, additional evaluation metrics are collected for debugging or analysis. Defaults to `False`.
     returns:
-        - log_action_probs (torch.TEnsor): For REINFORCE
-        - rewards (torch.Tensor):  I mean, also for REINFOCE
+        - log_action_probs (List[torch.Tensor]): 
+            A list of log probabilities of the actions taken by the navigation agent at each step.
+        - llm_rewards (List[torch.Tensor]): 
+            A list of rewards computed by the language model for each step.
+        - kg_rewards (List[torch.Tensor]): 
+            A list of rewards computed by the knowledge graph environment for each step.
+        - eval_metrics (Dict[str, Any]): 
+            A dictionary of evaluation metrics collected during the rollout (only populated if `dev_mode=True`).
     """
 
     assert steps_in_episode > 0
@@ -820,6 +1028,50 @@ def rollout(
 
 
 def main():
+    """
+    The main entry point for training and evaluating the MultiHopKG model.
+
+    This function orchestrates the entire process, including:
+    - Initializing configurations, tokenizers, and logging.
+    - Loading and preprocessing the training and development datasets.
+    - Setting up the knowledge graph environment and navigation agent.
+    - Training the navigation agent and language model using reinforcement learning.
+    - Optionally logging metrics and visualizations to Weights & Biases (wandb).
+
+    Workflow:
+    1. **Initial Setup**:
+       - Parses command-line arguments and configuration files.
+       - Initializes tokenizers and logging.
+       - Optionally waits for a debugger to attach if in debug mode.
+
+    2. **Data Loading**:
+       - Loads the knowledge graph dictionaries (entities and relations).
+       - Loads and preprocesses the QA datasets (training and development).
+
+    3. **Environment and Model Setup**:
+       - Loads the pretrained knowledge graph embeddings and initializes the KGE model.
+       - Sets up the approximate nearest neighbor (ANN) index for entity and relation embeddings.
+       - Initializes the pretrained language model (`HunchBart`) and the navigation agent (`ContinuousPolicyGradient`).
+       - Configures the ITLGraphEnvironment for reinforcement learning.
+
+    4. **Training**:
+       - Calls the `train_multihopkg` function to train the navigation agent and language model.
+       - Periodically evaluates the model on the development set using `evaluate_training`.
+
+    5. **Logging and Visualization**:
+       - Optionally logs metrics and visualizations to TensorBoard and wandb.
+       - Supports visualization of the knowledge graph embeddings.
+
+    Args:
+        None
+
+    Returns:
+        None
+
+    Notes:
+        - The function assumes that all required configurations and paths are provided via command-line arguments or configuration files.
+        - The function supports debugging, visualization, and logging for enhanced monitoring and analysis.
+    """
     # By default we run the config
     # Process data will determine by itself if there is any data to process
     args, question_tokenizer, answer_tokenizer, logger = initial_setup()
