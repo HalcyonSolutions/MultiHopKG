@@ -318,6 +318,7 @@ def evaluate_training(
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
     wandb_on: bool,
+    iteration: int,
     answer_id: List[int] = None,
 ):
     print("Running evalute_training")
@@ -387,6 +388,7 @@ def evaluate_training(
             current_evaluations[k] = v
 
         # Accumlate the metrics
+        current_evaluations["pg_loss"] = pg_loss.detach().cpu()
         batch_cumulative_metrics["dev/pg_loss"].append(pg_loss.mean().item())
 
     ########################################
@@ -424,6 +426,7 @@ def evaluate_training(
             id2relations=env.id2relation,
             entity2title=env.entity2title,
             relation2title=env.relation2title,
+            iteration=iteration,
             writer=writer,						  
             wandb_on=wandb_on,
             logger=logger,
@@ -574,6 +577,7 @@ def train_multihopkg(
                     question_tokenizer,
                     answer_tokenizer,
                     wandb_on,
+                    iteration = epoch_id * (len(train_data) // batch_size // mbatches_b4_eval) + (batch_count // mbatches_b4_eval),
                     answer_id=mini_batch["Answer-Entity"].tolist(),  # Extract answer_id from mini_batch
                 )
 
@@ -862,6 +866,7 @@ def rollout(
             llm_softmax = torch.nn.functional.softmax(logits, dim=-1)
             llm_entropies = -torch.sum(llm_softmax * torch.log(llm_softmax), dim=-1)
             eval_metrics["hunch_llm_entropy"].append(llm_entropies.mean().detach().cpu())
+            eval_metrics["hunch_llm_rewards"].append(llm_reward.detach().cpu())
 
             'KGE Metrics'
             eval_metrics["kg_extrinsic_rewards"].append(kg_extrinsic_rewards.detach().cpu())

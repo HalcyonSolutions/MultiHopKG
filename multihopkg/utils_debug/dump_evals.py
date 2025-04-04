@@ -29,6 +29,7 @@ def dump_evaluation_metrics(
     id2relations: Dict[int, str],
     entity2title: Dict[str, str],
     relation2title: Dict[str, str],
+    iteration: int,
     wandb_on: bool,
     logger: logging.Logger,
     writer: SummaryWriter,
@@ -50,10 +51,12 @@ def dump_evaluation_metrics(
         "kge_prev_pos" in evaluation_metrics_dictionary,
         "kge_action" in evaluation_metrics_dictionary,
         "hunch_llm_entropy" in evaluation_metrics_dictionary,
+        "hunch_llm_rewards" in evaluation_metrics_dictionary,
         "hunch_llm_final_guesses" in evaluation_metrics_dictionary,
         "kg_extrinsic_rewards" in evaluation_metrics_dictionary,
         "kg_intrinsic_reward" in evaluation_metrics_dictionary,
         "kg_dones" in evaluation_metrics_dictionary,
+        "pg_loss" in evaluation_metrics_dictionary,
     ]
     if not all(assertions):
         raise ValueError("Evaluation metrics dictionary is missing some keys")
@@ -80,9 +83,9 @@ def dump_evaluation_metrics(
             kge_cur_pos = evaluation_metrics_dictionary["kge_cur_pos"][:, element_id]
             kge_prev_pos = evaluation_metrics_dictionary["kge_prev_pos"][:, element_id]
             kge_action = evaluation_metrics_dictionary["kge_action"][:, element_id]
-            kge_extrinsic_rewards = evaluation_metrics_dictionary["kg_extrinsic_rewards"][:, element_id]
-            kge_intrinsic_rewards = evaluation_metrics_dictionary["kg_intrinsic_reward"][:, element_id]
-            kge_dones = evaluation_metrics_dictionary["kg_dones"][:, element_id]
+            kge_extrinsic_rewards = evaluation_metrics_dictionary["kg_extrinsic_rewards"][:, element_id].squeeze(1)
+            kge_intrinsic_rewards = evaluation_metrics_dictionary["kg_intrinsic_reward"][:, element_id].squeeze(1)
+            kge_dones = evaluation_metrics_dictionary["kg_dones"][:, element_id].squeeze(1)
             hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id, :]
             questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
             answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
@@ -168,7 +171,7 @@ def dump_evaluation_metrics(
             'KGE Extrinsic and Intrinsic Rewards'
             log_file.write(f"#NAV Agent Rewards --------------\n")
             log_file.write(f"Extrinsic Rewards: \n{kge_extrinsic_rewards.tolist()}\n")
-            log_file.write(f"Intrinsic Rewards: \n{kge_intrinsic_rewards.tolist()}\n")
+            log_file.write(f"Intrinsic Rewards: \n{(-kge_intrinsic_rewards).tolist()}\n")
             log_file.write(f"Dones: \n{kge_dones.tolist()}\n")
 
             # -----------------------------------
@@ -181,13 +184,13 @@ def dump_evaluation_metrics(
                 angle = kge_action[i0].cpu()/(embedding_range/torch.pi)
                 action_distance.append(f"{(180/torch.pi)*normalize_angle(angle).abs().sum().item():.2e}") # calculates how much rotation was done
             
-            log_file.write(f"Current Total Absolute Rotation (deg):\n {action_distance} \n")
+            log_file.write(f"Cummulative Embedding Rotation (deg):\n {action_distance} \n")
 
             position_distance = []
             position_distance_avg = []
             position_distance_ans = []
             closest_emb_distance = []
-            # This results should match action distance for pRotatE, otherwise something is wrong, sort of a sanity check
+            
             for i0 in range(kge_cur_pos.shape[0]):
                 diff = angular_difference(kge_cur_pos[i0]/(embedding_range/torch.pi), kge_prev_pos[i0]/(embedding_range/torch.pi), smooth=False)
                 rotational_total = (180/torch.pi)*(diff.sum().item())
@@ -204,10 +207,10 @@ def dump_evaluation_metrics(
                 position_distance_ans.append(f"{rotation_to_answer:.2e}")
                 closest_emb_distance.append(f"{rotation_to_closest:.2e}")
 
-            log_file.write(f"Rotation between KGE Positions (total) (deg):\n {position_distance} \n") # must match action distance, otherwise something is wrong
-            log_file.write(f"Rotation between KGE Positions (avg) (deg):\n {position_distance_avg} \n")
-            log_file.write(f"Rotation between Current KGE and Answer (avg) (deg):\n {position_distance_ans} \n")
-            log_file.write(f"Rotation between Current KGE Positions and Closest Entity (avg) in (deg):\n {closest_emb_distance} \n")
+            log_file.write(f"Cummulative Rotation between KGE Positions (deg):\n {position_distance} \n") # This results should match action distance for pRotatE, otherwise something is wrong, sort of a sanity check
+            log_file.write(f"Avg. Rotation between KGE Positions (deg):\n {position_distance_avg} \n")
+            log_file.write(f"Avg. Rotational Debt between Current KGE and Answer (deg):\n {position_distance_ans} \n")
+            log_file.write(f"Avg. Rotation Debt between Current KGE Pos. and Closest Entity (deg):\n {closest_emb_distance} \n")
 
             wandb_positions.append(" --> ".join(position_distance))
 
@@ -216,7 +219,29 @@ def dump_evaluation_metrics(
                 wandb_questions.append(questions_txt)
                 wandb_realAnswer.append(answer_txt)
                 wandb_predAnswer.append("\n".join([f"{step} {answer}" for step,answer in zip(reasoning_steps_str,predicted_answer)]))
-        
+    
+    ########################################
+    # Report to SummaryWriter
+    ########################################
+    'LLM Rewards'
+    hunch_llm_entropy = evaluation_metrics_dictionary["hunch_llm_entropy"]
+    llm_rewards = evaluation_metrics_dictionary["hunch_llm_rewards"]
+
+    writer.add_scalar('LLM Reward/Entropy', hunch_llm_entropy[-1].item(), iteration) # Only consider the last step
+    writer.add_scalar('LLM Reward/Reward', llm_rewards[-1].mean(), iteration) # Only consider the last step
+
+    'KG Rewards'
+    kge_extrinsic_rewards = evaluation_metrics_dictionary["kg_extrinsic_rewards"]
+    kge_intrinsic_rewards = evaluation_metrics_dictionary["kg_intrinsic_reward"]
+    kge_dones = evaluation_metrics_dictionary["kg_dones"]
+
+    writer.add_scalar('KG Reward/Extrinsic', kge_extrinsic_rewards[-1].mean(), iteration) # Only consider the last step
+    writer.add_scalar('KG Reward/Intrinsic', -kge_intrinsic_rewards[-1].mean(), iteration) # Only consider the last step
+    writer.add_scalar('KG Reward/Dones', kge_dones[-1].sum()/len(kge_dones[-1]), iteration) # Only consider the last step
+
+    'Loss'
+    pg_loss = evaluation_metrics_dictionary["pg_loss"]
+    writer.add_scalar('PG Loss', pg_loss[:,-1].mean(), iteration) # Only consider the last step
     ########################################
     # Report to Wandb
     ########################################
