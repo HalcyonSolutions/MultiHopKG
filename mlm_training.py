@@ -50,11 +50,11 @@ from multihopkg.run_configs import alpha
 from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
 from multihopkg.utils.convenience import tensor_normalization
 from multihopkg.utils.setup import set_seeds
-from multihopkg.vector_search import ANN_IndexMan
+from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
 from multihopkg.logs import torch_module_logging
 from multihopkg.utils.wandb import histogram_all_modules
 from multihopkg.emb.operations import angular_difference
-from multihopkg.debug_utils.dump_evals import dump_evaluation_metrics
+from multihopkg.utils_debug.dump_evals import dump_evaluation_metrics
 
 # PCA
 from sklearn.decomposition import PCA
@@ -393,7 +393,6 @@ def evaluate_training(
     # Take `current_evaluations` as
     # a sample of batches and dump its results
     ########################################
-    kg = env.knowledge_graph
     if verbose and logger:
         graph_annotation = []
         if env.entity2title:
@@ -405,10 +404,8 @@ def evaluate_training(
 
         # eval_extras has variables that we need
         just_dump_it_here = "./logs/evaluation_dumps.log"
-        questions = current_evaluations["reference_questions"]
-        answers = current_evaluations["true_answer"]
 
-        answer_tensor = get_embeddings_from_indices(
+        answer_kge_tensor = get_embeddings_from_indices(
             env.knowledge_graph.entity_embedding,
             torch.tensor(answer_id, dtype=torch.int),
         ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
@@ -417,21 +414,16 @@ def evaluate_training(
         dump_evaluation_metrics(
             path_to_log=just_dump_it_here,
             evaluation_metrics_dictionary=current_evaluations,
-            possible_relation_embeddings=kg.relation_embedding,
             vector_entity_searcher=env.ann_index_manager_ent,															 
             vector_rel_searcher=env.ann_index_manager_rel,
             question_tokenizer=question_tokenizer,
             answer_tokenizer=answer_tokenizer,
-            answer_tensor=answer_tensor,
-		  # TODO: Make sure the entity2id and relation2id are saved in the correct order and is being used correctly
+            answer_kge_tensor=answer_kge_tensor,
+            embedding_range=env.knowledge_graph.embedding_range.item(),
             id2entity=env.id2entity,					   
             id2relations=env.id2relation,
             entity2title=env.entity2title,
             relation2title=env.relation2title,
-            trained_pca=env.trained_pca,
-            graph_pca=env.graph_pca,
-            graph_annotation=graph_annotation,
-            visualize=visualize,
             writer=writer,						  
             wandb_on=wandb_on,
             logger=logger,
@@ -676,8 +668,6 @@ def write_parameters(data: torch.Tensor, layer_name: str, value_type: str, write
 
     writer.add_scalar(f'{layer_name}/{value_type} Mean', mean, epoch_id)
     writer.add_scalar(f'{layer_name}/{value_type} Var', var, epoch_id)
-    
-    print(f"{layer_name} {value_type} - mean {mean:.4f} & var {var:.4f}")
 
 def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, xlabel: str, ylabel: str, writer: SummaryWriter, epoch_id: int):
 
@@ -785,7 +775,6 @@ def rollout(
     log_action_probs = []
     llm_rewards = []
     kg_rewards = []
-    nav_answer_distance = []
     eval_metrics = DefaultDict(list)
 
     # Dummy nodes ? TODO: Figur eout what they do.
@@ -822,8 +811,8 @@ def rollout(
         # Ah ssampled_actions are the ones that have to go against the knowlde garph.
 
         states = observations.state
-        visited_embeddings = torch.from_numpy(observations.position)
-        position_ids = torch.from_numpy(observations.position_id)
+        visited_embeddings = observations.position.clone()
+        position_ids = observations.position_id.clone()
         # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
 
@@ -861,28 +850,28 @@ def rollout(
         # Stuff that we will only use for evaluation
         ########################################
         if dev_mode:
-            eval_metrics["sampled_actions"].append(sampled_actions)
-            eval_metrics["visited_embeddings"].append(visited_embeddings)
-            eval_metrics["position_ids"].append(position_ids)
-            eval_metrics["kge_cur_pos"].append(observations.kge_cur_pos.detach())
-            eval_metrics["kge_prev_pos"].append(observations.kge_prev_pos)
-            eval_metrics["kge_action"].append(observations.kge_action)
-            eval_metrics["hunch_llm_final_guesses"].append(logits.argmax(dim=-1))
+            eval_metrics["sampled_actions"].append(sampled_actions.detach().cpu())
+            eval_metrics["visited_embeddings"].append(visited_embeddings.detach().cpu())
+            eval_metrics["position_ids"].append(position_ids.detach().cpu())
+            eval_metrics["kge_cur_pos"].append(observations.kge_cur_pos.detach().cpu())
+            eval_metrics["kge_prev_pos"].append(observations.kge_prev_pos.detach().cpu())
+            eval_metrics["kge_action"].append(observations.kge_action.detach().cpu())
 
+            'LLM Metrics'
+            eval_metrics["hunch_llm_final_guesses"].append(logits.argmax(dim=-1))
             llm_softmax = torch.nn.functional.softmax(logits, dim=-1)
             llm_entropies = -torch.sum(llm_softmax * torch.log(llm_softmax), dim=-1)
             eval_metrics["hunch_llm_entropy"].append(llm_entropies.mean().detach().cpu())
 
-    # if dev_mode:
-    #     pdb.set_trace()
+            'KGE Metrics'
+            eval_metrics["kg_extrinsic_rewards"].append(kg_extrinsic_rewards.detach().cpu())
+            eval_metrics["kg_intrinsic_reward"].append(kg_intrinsic_reward.detach().cpu())
+            eval_metrics["kg_dones"].append(kg_dones.detach().cpu())
 
     if dev_mode:
         eval_metrics = {k: torch.stack(v) for k, v in eval_metrics.items()}
-    # dev_dictionary["sampled_actions"] = torch.stack(dev_dictionary["sampled_actions"])
-    # dev_dictionary["visited_position"] = torch.stack(dev_dictionary["visited_position"])
 
     # Return Rewards of Rollout as a Tensor
-
     return log_action_probs, llm_rewards, kg_rewards, eval_metrics
 
 
@@ -1051,16 +1040,26 @@ def main():
     ########################################
     # ! Currently using approximations, check if it this is the best way to go
     # ! Testing: exact computation
-    ann_index_manager_ent = ANN_IndexMan(
-        kge_model.get_all_entity_embeddings_wo_dropout(),
-        exact_computation=True,
-        nlist=100,
-    )
-    ann_index_manager_rel = ANN_IndexMan(
-        kge_model.get_all_relations_embeddings_wo_dropout(),
-        exact_computation=True,
-        nlist=100,
-    )
+    if args.model == "pRotatE": # for rotational kge models
+        ann_index_manager_ent = ANN_IndexMan_pRotatE(
+            kge_model.get_all_entity_embeddings_wo_dropout(),
+            embedding_range=kge_model.embedding_range.item(),
+        )
+        ann_index_manager_rel = ANN_IndexMan_pRotatE(
+            kge_model.get_all_relations_embeddings_wo_dropout(),
+            embedding_range=kge_model.embedding_range.item(),
+        )
+    else: # for non-rotational kge models
+        ann_index_manager_ent = ANN_IndexMan(
+            kge_model.get_all_entity_embeddings_wo_dropout(),
+            exact_computation=True,
+            nlist=100,
+        )
+        ann_index_manager_rel = ANN_IndexMan(
+            kge_model.get_all_relations_embeddings_wo_dropout(),
+            exact_computation=True,
+            nlist=100,
+        )
 
     if args.visualize:
         # Train the pca, and also get the emebeddings of the graph as an array
