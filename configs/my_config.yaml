@@ -1,8 +1,9 @@
 pretrained_sun_model_loc: "models/sun"
 data_dir: "data/FB15k"
 model: "pRotatE"
-graph_embed_model_name: "RotatE"
 rl_gamma: 0.9
 freebaseqa_path: "data/freebaseqa"
+nav_start_emb_type: "relevant"
 num_rollout_steps: 3
+batch_size: 32
 batch_size_dev: 12

@@ -603,7 +603,7 @@ class KGEModel(nn.Module):
         ), "The relation embedding must be either a nn.Parameter or nn.Embedding"
         return self.relation_embedding
 
-    def get_starting_embedding(self, startType: str = 'centroid', ent_id: int = None)   -> torch.Tensor:
+    def get_starting_embedding(self, startType: str = 'centroid', ent_id: torch.Tensor = None)   -> torch.Tensor:
         """
         Returns the starting point for the navigation.
             

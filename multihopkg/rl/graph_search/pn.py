@@ -19,6 +19,7 @@ import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import var_cuda, zeros_var_cuda
 from multihopkg.vector_search import ANN_IndexMan
 from multihopkg.environments import Environment, Observation
+from multihopkg.emb.operations import angular_difference
 from typing import Tuple, List, Dict, Optional
 import pdb
 
@@ -497,7 +498,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
         knowledge_graph: KGEModel,
         relation_dim: int,
         nav_start_emb_type: str,
-
         node_data: str,
         node_data_key: str,
         rel_data: str,
@@ -512,6 +512,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         trained_pca,
         graph_pca,
         graph_annotation: str,
+        eta: float = 10.0, # For error margin in the distance, TODO: Must find a better value
     ):
         super(ITLGraphEnvironment, self).__init__()
         # Should be injected via information extracted from Knowledge Grap
@@ -574,6 +575,11 @@ class ITLGraphEnvironment(Environment, nn.Module):
         )
         self.question_embedding_module = question_embedding_module
         self.question_dim = self.question_embedding_module.config.hidden_size
+
+        self.answer_embeddings = None  # This is the embeddings of the answer (batch_size, entity_dim)
+        self.answer_found = None       # This is a flag to denote if the answer has been already been found (batch_size, 1)
+        self.eta = eta                 # This is the error margin in the distance for finding the answer
+
         # (self.W1, self.W2, self.W1Dropout, self.W2Dropout, self.path_encoder, self.concat_projector) = (
         (self.concat_projector, self.W2, self.W1Dropout, self.W2Dropout, _) = (
             self._define_modules(
@@ -612,13 +618,15 @@ class ITLGraphEnvironment(Environment, nn.Module):
         return final_embedding
 
     # TOREM: We need to test if this can replace forward for now.
-    def step(self, actions: torch.Tensor) -> Observation:
+    def step(self, actions: torch.Tensor) -> Tuple[Observation, torch.Tensor, torch.Tensor]:
         """
         This one will simply find the closes emebdding in our class and dump it here as an observation.
         Args:
             - actions (torch.Tensor): Shall be of shape (batch_size, action_dimension)
         Return:
             - observations (torch.Tensor): The observations at the current state. Shape: (batch_size, observation_dim)
+            - rewards (torch.Tensor) (float): The rewards at the current state. Shape: (batch_size, 1)
+            - dones (torch.Tensor) (bool): The dones at the current state. Shape: (batch_size, 1)
         """
         assert isinstance(
             self.current_position, torch.Tensor
@@ -643,6 +651,18 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.current_position = self.knowledge_graph.flexible_forward(
             self.current_position, actions, 
         )
+
+        # No gradients are calculated here
+        with torch.no_grad():
+            angles_diff = angular_difference(
+                self.answer_embeddings/(self.knowledge_graph.embedding_range.item()/torch.pi), 
+                self.current_position/(self.knowledge_graph.embedding_range.item()/torch.pi),
+                smooth=False
+            )
+            
+            found_ans = torch.norm(angles_diff, dim=-1)[:, torch.newaxis] < self.eta
+            torch.logical_or(self.answer_found, found_ans, out=self.answer_found)
+            extrinsic_reward = found_ans.float()
 
         # ! Approach 1: No restraint
 
@@ -683,12 +703,12 @@ class ITLGraphEnvironment(Environment, nn.Module):
             position=matched_entity_embeddings,
             position_id=corresponding_ent_idxs,
             state=projected_state,
-            kge_cur_pos=self.current_position.detach(),
+            kge_cur_pos=self.current_position, #.detach(), # TODO: Check if we need to detach this for reward calculation
             kge_prev_pos=detached_curpos,
             kge_action=detached_actions,
         )
         
-        return observation
+        return observation, extrinsic_reward, self.answer_found
 
     def _define_modules(
         self,
@@ -744,12 +764,14 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         return W1, W2, W1Dropout, W2Dropout, path_encoder
 
-    def reset(self, initial_states_info: torch.Tensor, relevant_ent: List[List[None]] = None) -> Observation:
+    def reset(self, initial_states_info: torch.Tensor, answer_ent: List[int], relevant_ent: List[List[None]] = None) -> Observation:
         """
         Will reset the episode to the initial position
         This will happen by grabbign the initial_states_info embeddings, concatenating them with the centroid and then passing them to the environment
         Args:
             - initial_state_info (torch.Tensor): In this implemntation sit is the initial_states_info
+            - answer_ent (List[int]): The answer entity for the current batch
+            - relevant_ent (List[List[None]]): The relevant entities for the current batch
         Returnd:
             - postion (torch.Tensor): Position in the graph
             - state (torch.Tensor): Aggregation of states visited so far summarized in a single vector per batch element.
@@ -766,12 +788,16 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.current_questions_emb = initial_states_info  # (batch_size, emb_dim)
         self.current_step_no = 0
 
+        # get the embeddings of the answer entities
+        self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent) # (batch_size, emb_dim)
+        self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device)
+
+        # TODO: Improve upon this if-else conditioning with a dictionary-function
         if self.nav_start_emb_type == 'centroid':
             # Create more complete representation of state
             centroid = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type)
 
             init_emb = centroid.unsqueeze(0).repeat(len(initial_states_info), 1)
-
             self.current_position = init_emb.clone()
         elif self.nav_start_emb_type == 'random':
             # Create more complete representation of state
@@ -817,7 +843,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             position=self.current_position.detach().cpu().numpy(),
             position_id=np.zeros((self.current_position.shape[0])),
             state=projected_state,
-            kge_cur_pos=self.current_position.detach(),
+            kge_cur_pos=self.current_position, #.detach(),
             kge_prev_pos=torch.zeros_like(self.current_position.detach()),
             kge_action=torch.zeros(self.action_dim),
         )
