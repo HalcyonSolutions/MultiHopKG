@@ -651,8 +651,8 @@ def initialize_path(questions: torch.Tensor):
     raise NotImplementedError
 
 
-# TODO: Change function name and move to a separate file
-def calculate_reward(
+# TODO: Move function to a separate file
+def calculate_llm_reward(
     hunch_llm: nn.Module,
     obtained_state: torch.Tensor,
     answers_ids: torch.Tensor,
@@ -767,7 +767,7 @@ def rollout(
         ########################################
         stacked_states = torch.stack(states_so_far).permute(1, 0, 2)
         # Calculate how close we are
-        llm_reward, logits = calculate_reward(
+        llm_reward, logits = calculate_llm_reward(
             hunch_llm, stacked_states, answers_ids
         )
 
