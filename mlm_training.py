@@ -11,7 +11,6 @@ import argparse
 import json
 import logging
 import os
-import pdb
 from typing import List, Tuple, Dict, Any, DefaultDict
 import debugpy
 import sys
@@ -21,14 +20,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 import torch
-from transformers.models.oneformer.image_processing_oneformer import (
-    convert_segmentation_map_to_binary_masks,
-)
 from torch.utils.tensorboard import SummaryWriter 
 
 import wandb
 from rich import traceback
-from sklearn.model_selection import train_test_split
 from torch import nn
 from tqdm import tqdm
 from transformers import (
@@ -143,9 +138,8 @@ def batch_loop_dev(
     ########################################
     # Calculate Reinforce Objective
     ########################################
-    logger.warning(f"We just left dev rollout")
-    #-------------------------------------------------------------------------
     'LLM Rewards'
+
     llm_rewards_t = (
         torch.stack(llm_rewards)
     ).permute(1,0,2)  # TODO: I think I need to add the gamma here
@@ -170,6 +164,7 @@ def batch_loop_dev(
     llm_rewards_t = llm_rewards_t.expand_as(log_probs_t) # TOREM: This is a hack to make the shapes match
     #-------------------------------------------------------------------------
     'Knowledge Graph Environment Rewards'
+
     kg_rewards_t = (
         torch.stack(kg_rewards)
     ).permute(1,0,2) # Correcting to Shape: (batch_size, num_steps, reward_type)
@@ -178,6 +173,9 @@ def batch_loop_dev(
     assert not torch.isnan(kg_rewards_t).any(), "NaN detected in the kg rewards (batch_loop_dev). Aborting training."
 
     #-------------------------------------------------------------------------
+    'Discount and Merging of Rewards'
+
+    # TODO: Check if a weight is needed for combining the rewards
     gamma = nav_agent.gamma
     discounted_rewards = torch.zeros_like(llm_rewards_t.clone()).to(llm_rewards_t.device) # Shape: (batch_size, num_steps)
     discounted_rewards[:,-1] = llm_rewards_t[:,-1] + kg_rewards_t[:,-1]
@@ -185,12 +183,14 @@ def batch_loop_dev(
         discounted_rewards[:,t] += gamma * (llm_rewards_t[:,t + 1] + kg_rewards_t[:,t + 1])
 
     # Sample-wise normalization of the rewards for stability
-
     discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
     
+    #--------------------------------------------------------------------------
+    'Loss Calculation'
+
     pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
 
-    # logger.info(f"Does pg_loss require grad? {pg_loss.requires_grad}")
+    logger.warning(f"We just left dev rollout")
 
     return pg_loss, eval_extras
 
@@ -240,6 +240,7 @@ def batch_loop(
     logger.debug("About to calculate rewards")
     #-------------------------------------------------------------------------
     'LLM Rewards'
+
     llm_rewards_t = (
         torch.stack(llm_rewards)
     ).permute(1,0,2)  # TODO: I think I need to add the gamma here
@@ -260,16 +261,16 @@ def batch_loop(
     llm_rewards_t = llm_rewards_t.expand_as(log_probs_t) # TOREM: This is a hack to make the shapes match
     #-------------------------------------------------------------------------
     'Knowledge Graph Environment Rewards'
+
     kg_rewards_t = (
         torch.stack(kg_rewards)
     ).permute(1,0,2) # Correcting to Shape: (batch_size, num_steps, reward_type)
     kg_rewards_t = kg_rewards_t.squeeze(2) # Shape: (batch_size, num_steps)
 
     #-------------------------------------------------------------------------
-    # ! Modifying the rewards to stabilize training
-    # ! Approach 1: Use the rewards as is
+    'Discount and Merging of Rewards'
 
-    # ! Approach 2: Use the discounted rewards
+    # TODO: Check if a weight is needed for combining the rewards
     gamma = nav_agent.gamma
     discounted_rewards = torch.zeros_like(llm_rewards_t.clone()).to(llm_rewards_t.device) # Shape: (batch_size, num_steps)
     discounted_rewards[:,-1] = llm_rewards_t[:,-1] + kg_rewards_t[:,-1]
@@ -277,29 +278,13 @@ def batch_loop(
         discounted_rewards[:,t] += gamma * (llm_rewards_t[:,t + 1] + kg_rewards_t[:,t + 1])
 
     # Sample-wise normalization of the rewards for stability
-
     discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
 
-    # ! Approach 3: Use the rewards as is but scale them
-    # Scale rewards instead of normalizing
-    # rewards_t = rewards_t / (torch.abs(rewards_t).max() + 1e-8)
 
-    # ! Approach 4: Use the rewards as is but normalize them with the mean and std
-    # Normalize the rewards
-    # rewards_t = (rewards_t - rewards_t.mean()) / (rewards_t.std() + 1e-8)
+    #--------------------------------------------------------------------------
+    'Loss Calculation'
 
     pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
-    # TODO: Perhaps only use the first few steps ?
-
-    # ! Approach 2: Use the discounted rewards
-    # pg_loss = -1 * (discounted_rewards * log_probs_t)
-
-    # TOREM: Maybe we don't need this visualization
-    # ########################################
-    # # Adding TorchViz Dot here
-    # ########################################
-    # dot = make_dot(pg_loss.sum())
-    # dot.render("model_graph", format="png")
 
     return pg_loss, eval_extras
 
@@ -321,7 +306,6 @@ def evaluate_training(
     iteration: int,
     answer_id: List[int] = None,
 ):
-    print("Running evalute_training")
 
     global in_dev_mode
     num_batches = len(dev_df) // batch_size_dev
@@ -338,30 +322,27 @@ def evaluate_training(
         "dev/batch_count": [batch_count],
         "dev/pg_loss": [],
     }  # For storing results from all batches
+
     current_evaluations = (
         {}
     )  # For storing results from last batch. Otherwise too much info
 
     with torch.no_grad():
-        # for batch_id in range(num_batches):
 
         # We will only evaluate on the last batch
         batch_id = num_batches - 1
-        # TODO: Get the rollout working
+
         mini_batch = dev_df[
             batch_id * batch_size_dev : (batch_id + 1) * batch_size_dev
         ]
+
         if not isinstance(  # TODO: Remove this assertion once it is never ever met again
             mini_batch, pd.DataFrame
         ):  # For the lsp to give me a break
             raise RuntimeError(
                 f"The mini batch is not a pd.DataFrame, but a {type(mini_batch)}. Please check the data loading code."
             )
-        # if (
-        #     len(mini_batch) < batch_size_dev
-        # ):  # We dont want to evaluate on incomplete batches
-        #     continue
-
+        
         current_evaluations["reference_questions"] = mini_batch["Question"]
         current_evaluations["true_answer"] = mini_batch["Answer"]
         current_evaluations["relevant_entities"] = mini_batch["Relevant-Entities"]
@@ -374,6 +355,7 @@ def evaluate_training(
         pad_token_id = answer_tokenizer.pad_token_id
         if bos_token_id is None or eos_token_id is None or pad_token_id is None:
             raise ValueError("Assumptions Wrong. The answer_tokenizer must have a bos_token_id, eos_token_id and pad_token_id")
+        
         pg_loss, eval_extras = batch_loop_dev(
             env,
             mini_batch,
@@ -489,21 +471,17 @@ def train_multihopkg(
     # TODO: Get the rollout working
 
     # Print Model Parameters + Perhaps some more information
-    print(
-        "--------------------------\n" "Model Parameters\n" "--------------------------"
-    )
-    for name, param in nav_agent.named_parameters():
-        print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
+    if verbose:
+        print(
+            "--------------------------\n" "Model Parameters\n" "--------------------------"
+        )
+        for name, param in nav_agent.named_parameters():
+            print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
 
-    for name, param in env.named_parameters():
-        if param.requires_grad: print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
+        for name, param in env.named_parameters():
+            if param.requires_grad: print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
 
     writer = SummaryWriter(log_dir=f'runs')
-    
-    # Just use Adam Optimizer by default
-    # optimizer = torch.optim.Adam(  # type: ignore
-    #     filter(lambda p: p.requires_grad, nav_agent.parameters()), lr=learning_rate
-    # )
 
     named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()) + list(hunch_llm.named_parameters()))}
     optimizer = torch.optim.Adam(  # type: ignore
@@ -524,11 +502,6 @@ def train_multihopkg(
     if bos_token_id is None or eos_token_id is None or pad_token_id is None:
         raise ValueError("Assumptions Wrong. The answer_tokenize must have a bos_token_id, eos_token_id and pad_token_id")
 
-    # variables to track vanishing gradient for nav_agent
-    mu_tracker = [[], []] # mean, and std
-    sigma_tracker = [[], []]
-    fc1_tracker = [[], []]
-
     # Replacement for the hooks
     if track_gradients:
         grad_logger = torch_module_logging.ModuleSupervisor({
@@ -546,8 +519,6 @@ def train_multihopkg(
 
         # Set in training mode
         nav_agent.train()
-        batch_rewards = []
-        entropies = []
 
         ##############################
         # Batch Loop
@@ -555,10 +526,11 @@ def train_multihopkg(
         # TODO: update the parameters.
         for sample_offset_idx in tqdm(range(0, len(train_data), batch_size), desc="Training Batches", leave=False):
             mini_batch = train_data[sample_offset_idx : sample_offset_idx + batch_size]
-            # pdb.set_trace()
+
             assert isinstance(
                 mini_batch, pd.DataFrame
             )  # For the lsp to give me a break
+
             ########################################
             # Evaluation
             ########################################
@@ -604,7 +576,6 @@ def train_multihopkg(
             # TODO: Uncomment and try: 
             pg_loss = tensor_normalization(pg_loss)
 
-            batch_rewards.append(reinforce_terms_mean_item)
             logger.debug("Bout to go backwords")
             reinforce_terms_mean.backward()
 
@@ -620,7 +591,7 @@ def train_multihopkg(
             optimizer.step()
 
             if torch.all(nav_agent.mu_layer.weight.grad == 0):
-                print("Gradients are zero for mu_layer!")
+                logger.warning("Gradients are zero for mu_layer!")
 
             # TODO: get grad distribution parameters,
             # Inspecting vanishing gradient
@@ -666,6 +637,7 @@ def train_multihopkg(
 
             batch_count += 1
 
+# TODO: Move this to a separate file
 def write_parameters(data: torch.Tensor, layer_name: str, value_type: str, writer: SummaryWriter, epoch_id: int):
     mean = data.mean().item()
     var = data.var().item()
@@ -673,6 +645,7 @@ def write_parameters(data: torch.Tensor, layer_name: str, value_type: str, write
     writer.add_scalar(f'{layer_name}/{value_type} Mean', mean, epoch_id)
     writer.add_scalar(f'{layer_name}/{value_type} Var', var, epoch_id)
 
+# TODO: Move this to a separate file
 def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, xlabel: str, ylabel: str, writer: SummaryWriter, epoch_id: int):
 
     plt.figure(1)
@@ -702,11 +675,14 @@ def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, x
     hist_buf.close()
     plt.close()
 
+
+# TODO: Remove if unused
 def initialize_path(questions: torch.Tensor):
     # Questions must be turned into queries
     raise NotImplementedError
 
 
+# TODO: Change function name and move to a separate file
 def calculate_reward(
     hunch_llm: nn.Module,
     obtained_state: torch.Tensor,
@@ -781,16 +757,10 @@ def rollout(
     kg_rewards = []
     eval_metrics = DefaultDict(list)
 
-    # Dummy nodes ? TODO: Figur eout what they do.
-    # TODO: Perhaps here we can enter through the centroid.
-    # For now we still with these dummy
-    # NOTE: We repeat these entities until we get the right shape:
-    # TODO: make sure we keep all seen nodes up to date
     answer_tensor = get_embeddings_from_indices(
             env.knowledge_graph.entity_embedding,
             torch.tensor(answer_id, dtype=torch.int),
     ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
-
 
     # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
     observations = env.reset(
@@ -810,13 +780,14 @@ def rollout(
         # State is meant to summrized path history.
         sampled_actions, log_probs, entropies = nav_agent(cur_state)
 
-        # TODO:Make sure we are gettign rewards from the environment.
+        # TODO: Make sure we are gettign rewards from the environment.
         observations, kg_extrinsic_rewards, kg_dones = env.step(sampled_actions)
         # Ah ssampled_actions are the ones that have to go against the knowlde garph.
 
         states = observations.state
         visited_embeddings = observations.position.clone()
         position_ids = observations.position_id.clone()
+        
         # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
 
@@ -833,6 +804,7 @@ def rollout(
 
         llm_rewards.append(llm_reward)
 
+        # TODO: Make this more generic, so that non-rotational models can also be used
         kg_intrinsic_reward = angular_difference(
             observations.kge_cur_pos.unsqueeze(1)/(env.knowledge_graph.embedding_range.item()/torch.pi),
             answer_tensor/(env.knowledge_graph.embedding_range.item()/torch.pi),
@@ -879,7 +851,7 @@ def rollout(
     # Return Rewards of Rollout as a Tensor
     return log_action_probs, llm_rewards, kg_rewards, eval_metrics
 
-
+# TODO: Move this to a separate file
 def load_qa_data(
     cached_metadata_path: str,
     raw_QAData_path,
@@ -916,7 +888,7 @@ def load_qa_data(
         )
         question_tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
         answer_tokenzier   = AutoTokenizer.from_pretrained(answer_tokenizer_name)
-        df_split, train_metadata = (
+        df_split, train_metadata = ( # Includes shuffling
             data_utils.process_and_cache_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
                 raw_QAData_path,
                 cached_metadata_path,
@@ -930,16 +902,6 @@ def load_qa_data(
         logger.info(
             f"Done. Result dumped at : \n\033[93m\033[4m{train_metadata['saved_paths']}\033[0m"
         )
-
-    ########################################
-    # Train Validation Test split
-    ########################################
-
-    # All of this was unecessary it was already beign done before.
-    # shuffled_train_df = train_df.sample(frac=1).reset_index(drop=True)
-    # train_df, val_df = train_test_split(
-    #     shuffled_train_df, test_size=0.2, random_state=42
-    # )
 
     return train_df, dev_df, train_metadata
 
@@ -993,24 +955,12 @@ def main():
             notes=args.wr_notes,
         )
 
-    ## Agent needs a Knowledge graph as well as the environment
+    ########################################
+    # Set the KG Environment
+    ########################################
+    # Agent needs a Knowledge graph as well as the environment
     logger.info(":: Setting up the knowledge graph")
 
-    # TODO: Load the weighs ?
-    # knowledge_graph = SunKnowledgeGraph(
-    #     model=args.model,
-    #     pretrained_sun_model_path=args.pretrained_sun_model_loc,
-    #     data_path=args.data_dir,
-    #     graph_embed_model_name=args.graph_embed_model_name,
-    #     gamma=args.gamma,
-    #     id2entity=id2ent,
-    #     entity2id=ent2id,
-    #     id2relation=id2rel,
-    #     relation2id=rel2id,
-    #     device=args.device,
-    # )
-
-    # TODO: Test this replacement for SunKnowledgeGraph
     entity_embeddings = np.load(os.path.join(args.trained_model_path, "entity_embedding.npy"))
     relation_embeddings = np.load(os.path.join(args.trained_model_path, "relation_embedding.npy"))
     checkpoint = torch.load(os.path.join(args.trained_model_path , "checkpoint"))
@@ -1025,7 +975,6 @@ def main():
     # Information computed by knowldege graph for future dependency injection
     dim_entity = kge_model.get_entity_dim()
     dim_relation = kge_model.get_relation_dim()
-    logger.info("You have reached the exit")
 
     # Paths for triples
     train_triplets_path = os.path.join(args.data_dir, "train.triples")
@@ -1038,13 +987,13 @@ def main():
     # Setup the ann index.
     # Will be needed for obtaining observations.
     ########################################
+    
     logger.info(":: Setting up the ANN Index")
 
     ########################################
     # Setup the Vector Searchers
     ########################################
-    # ! Currently using approximations, check if it this is the best way to go
-    # ! Testing: exact computation
+    # TODO: Improve the ANN index manager for rotational models
     if args.model == "pRotatE": # for rotational kge models
         ann_index_manager_ent = ANN_IndexMan_pRotatE(
             kge_model.get_all_entity_embeddings_wo_dropout(),
@@ -1098,9 +1047,10 @@ def main():
     # TODO: Remove the hardcode. Perhaps
     embedding_hidden_size = config.d_model
     embedding_vocab_size = config.vocab_size
-    print(
-        f"The hidden dimension of the embedding layer is {embedding_hidden_size} and its vocab size is {embedding_vocab_size}"
-    )
+    if args.verbose:
+        print(
+            f"The hidden dimension of the embedding layer is {embedding_hidden_size} and its vocab size is {embedding_vocab_size}"
+        )
 
     # We prepare our custom encoder for Bart Here
     hunch_llm = HunchBart(
@@ -1180,21 +1130,6 @@ def main():
 
     # TODO: Add checkpoint support
     # See args.start_epoch
-
-    # TODO: Load the validation data
-    # dev_path = os.path.join(args.data_dir, "dev.triples")
-    # data_triple_split_dict = data_utils.sun_load_triples_and_dict( args.pretrained_sun_model_loc)
-
-    data_triple_split_dict, id2entity, id2relation = data_utils.load_triples_and_dict(
-        [train_triplets_path, dev_triplets_path],  # TODO: Load the test_data
-        entity_index_path,
-        relation_index_path,
-        group_examples_by_query=False,
-        add_reverse_relations=False,
-    )
-
-    print("Let me get the head of id2entity:")
-    print(id2entity[0])
 
     # TODO: Make it take check for a checkpoint and decide what start_epoch
     # if args.checkpoint_path is not None:
