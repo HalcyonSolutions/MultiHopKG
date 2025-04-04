@@ -80,6 +80,10 @@ class KGEModel(nn.Module):
             raise ValueError('ComplEx should use --double_entity_embedding and --double_relation_embedding')
         
         self.centroid = calculate_entity_centroid(self.entity_embedding)
+        self.flexible_func = {
+            "RotatE": self.flexible_forward_rotate,
+            "pRotatE": self.flexible_forward_protate,
+        }
 
     def load_embeddings(self, entity_embedding: np.ndarray, relation_embedding: np.ndarray):
         '''
@@ -574,13 +578,8 @@ class KGEModel(nn.Module):
         Execute the flexible forward pass for the model.
         This function is used for the flexible action space.
         """
-
-        flexible_func = {
-            "RotatE": self.flexible_forward_rotate,
-            "pRotatE": self.flexible_forward_protate,
-        }
         
-        return flexible_func[self.model_name](cur_states, cur_actions)
+        return self.flexible_func[self.model_name](cur_states, cur_actions)
 
     def get_centroid(self) -> torch.Tensor:
         return self.centroid

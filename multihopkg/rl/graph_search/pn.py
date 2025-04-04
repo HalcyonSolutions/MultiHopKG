@@ -563,6 +563,11 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         assert nav_start_emb_type in ['centroid', 'random', 'relevant'], f"Invalid start_embedding_type: {nav_start_emb_type}"
         self.nav_start_emb_type = nav_start_emb_type
+        self.start_emb_func = {
+            'centroid': self.get_centroid_embedding,
+            'random': self.get_random_embedding,
+            'relevant': self.get_relevant_embedding
+        }
 
         ########################################
         # Get the actual torch modules defined
@@ -653,6 +658,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         )
 
         # No gradients are calculated here
+        # TODO: Make sure this is compatible with both non-rotational and rotational embeddings
         with torch.no_grad():
             angles_diff = angular_difference(
                 self.answer_embeddings/(self.knowledge_graph.embedding_range.item()/torch.pi), 
@@ -792,32 +798,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent) # (batch_size, emb_dim)
         self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device)
 
-        # TODO: Improve upon this if-else conditioning with a dictionary-function
-        if self.nav_start_emb_type == 'centroid':
-            # Create more complete representation of state
-            centroid = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type)
-
-            init_emb = centroid.unsqueeze(0).repeat(len(initial_states_info), 1)
-            self.current_position = init_emb.clone()
-        elif self.nav_start_emb_type == 'random':
-            # Create more complete representation of state
-            random_pos = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type)
-
-            init_emb = random_pos.unsqueeze(0).repeat(len(initial_states_info), 1)
-
-            self.current_position = init_emb.clone()
-        elif self.nav_start_emb_type == 'relevant':
-            relevant_ent = torch.tensor([random.choice(sublist) for sublist in relevant_ent], dtype=torch.int)
-        
-            # Create more complete representation of state
-            init_emb = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, relevant_ent)
-
-            if init_emb.dim() == 1: init_emb = init_emb.unsqueeze(0)
-            assert init_emb.shape[0] == len(initial_states_info), "Error! Initial states info and relevant embeddings must have the same batch size."
-
-            self.current_position = init_emb.clone()
-        else:
-            raise NotImplementedError
+        init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), relevant_ent)
+        self.current_position = init_emb.clone()
 
         # ! Inspecting projections (gradients variance is too high from the start)
 
@@ -849,6 +831,27 @@ class ITLGraphEnvironment(Environment, nn.Module):
         )
 
         return observation
+    def get_starting_embedding(self, start_emb_type: str, size: int) -> torch.Tensor:
+        node_emb = self.knowledge_graph.get_starting_embedding(start_emb_type)
+
+        init_emb = node_emb.unsqueeze(0).repeat(size, 1)
+        return init_emb
+    
+    def get_centroid_embedding(self, size: int, relevant_ent: List[int] = None) -> torch.Tensor:
+        return self.get_starting_embedding('centroid', size)
+
+    def get_random_embedding(self, size: int, relevant_ent: List[int] = None) -> torch.Tensor:
+        return self.get_starting_embedding('random', size)
+    
+    def get_relevant_embedding(self, size: int, relevant_ent: List[int] = None) -> torch.Tensor:
+        relevant_ent = torch.tensor([random.choice(sublist) for sublist in relevant_ent], dtype=torch.int)
+    
+        # Create more complete representation of state
+        init_emb = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, relevant_ent)
+
+        if init_emb.dim() == 1: init_emb = init_emb.unsqueeze(0)
+        assert init_emb.shape[0] == size, "Error! Initial states info and relevant embeddings must have the same batch size."
+        return init_emb
 
     # * This is Nura's code. Might not really bee kj
     def get_action_space(self, e, obs, kg):
