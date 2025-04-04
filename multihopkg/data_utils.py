@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Sequence, List, Tuple, Union
 import re
 import ast
+import logging
 
 import numpy as np
 import pandas as pd
@@ -714,6 +715,62 @@ def process_and_cache_triviaqa_data(
         json.dump(metadata, f)
 
     return DFSplit(train=train_df, dev=dev_df, test=test_df), metadata
+
+
+def load_qa_data(
+    cached_metadata_path: str,
+    raw_QAData_path,
+    question_tokenizer_name: str,
+    answer_tokenizer_name: str,
+    entity2id: Dict[str, int],
+    relation2id: Dict[str, int], 
+    logger: logging.Logger,
+    force_recompute: bool = False,
+):
+
+    if os.path.exists(cached_metadata_path) and not force_recompute:
+        logger.info(
+            f"\033[93m Found cache for the QA data {cached_metadata_path} will load it instead of working on {raw_QAData_path}. \033[0m"
+        )
+        # Read the first line of the raw csv to count the number of columns
+        train_metadata = json.load(open(cached_metadata_path.format(question_tokenizer_name, answer_tokenizer_name)))
+        saved_paths: Dict[str, str] = train_metadata["saved_paths"]
+
+        train_df = pd.read_parquet(saved_paths["train"])
+        # TODO: Eventually use this to avoid data leakage
+        dev_df = pd.read_parquet(saved_paths["dev"])
+        test_df = pd.read_parquet(saved_paths["test"])
+
+        # Ensure that we are not reading them integers as strings, but also not as floats
+        logger.info(
+            f"Loaded cached data from \033[93m\033[4m{json.dumps(cached_metadata_path,indent=4)} \033[0m"
+        )
+    else:
+        ########################################
+        # Actually compute the data.
+        ########################################
+        logger.info(
+            f"\033[93m Did not find cache for the QA data {cached_metadata_path}. Will now process it from {raw_QAData_path} \033[0m"
+        )
+        question_tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
+        answer_tokenzier   = AutoTokenizer.from_pretrained(answer_tokenizer_name)
+        df_split, train_metadata = ( # Includes shuffling
+            data_utils.process_and_cache_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
+                raw_QAData_path,
+                cached_metadata_path,
+                question_tokenizer,
+                answer_tokenzier,
+                entity2id,
+                relation2id,
+            )
+        )
+        train_df, dev_df, test_df = df_split.train, df_split.dev, df_split.test
+        logger.info(
+            f"Done. Result dumped at : \n\033[93m\033[4m{train_metadata['saved_paths']}\033[0m"
+        )
+
+    return train_df, dev_df, train_metadata
+
 
 @stale_code
 def data_loading_router(

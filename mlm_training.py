@@ -35,6 +35,7 @@ from transformers import (
 )
 
 import multihopkg.data_utils as data_utils
+import multihopkg.utils_debug.distribution_tracker as dist_tracker
 from multihopkg.environments import Observation
 from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
 from multihopkg.models_language.classical import HunchBart, collate_token_ids_batch
@@ -51,6 +52,7 @@ from multihopkg.utils.wandb import histogram_all_modules
 from multihopkg.emb.operations import angular_difference
 from multihopkg.utils_debug.dump_evals import dump_evaluation_metrics
 
+
 # PCA
 from sklearn.decomposition import PCA
 
@@ -59,9 +61,6 @@ from PIL import Image
 
 traceback.install()
 wandb_run = None
-
-# TODO: Remove before final realease, this is purely for debugging
-in_dev_mode = False
 
 
 def initialize_model_directory(args, random_seed=None):
@@ -142,7 +141,7 @@ def batch_loop_dev(
 
     llm_rewards_t = (
         torch.stack(llm_rewards)
-    ).permute(1,0,2)  # TODO: I think I need to add the gamma here
+    ).permute(1,0,2)
 
     assert not torch.isnan(llm_rewards_t).any(), "NaN detected in the llm rewards (batch_loop_dev). Aborting training."
 
@@ -243,7 +242,7 @@ def batch_loop(
 
     llm_rewards_t = (
         torch.stack(llm_rewards)
-    ).permute(1,0,2)  # TODO: I think I need to add the gamma here
+    ).permute(1,0,2)
 
     # Get only masked, then mean
     llm_rewards_t_unpacked = []
@@ -307,11 +306,10 @@ def evaluate_training(
     answer_id: List[int] = None,
 ):
 
-    global in_dev_mode
     num_batches = len(dev_df) // batch_size_dev
     nav_agent.eval()
     hunch_llm.eval()
-    in_dev_mode = True  # TOREM: This is only for debugging
+
     env.eval()
     # env.question_embedding_module.eval()
     assert (
@@ -414,10 +412,6 @@ def evaluate_training(
             logger=logger,
         )
         logger.warning(f"We just left dump_evaluation_metrics")
-        # TODO: Maybe dump the language metrics in wandb ?
-        # table = wandb.Table(
-        #     columns=["Question", "Path Taken", "Real Answer", "Given Answer"]
-        # )
 
 
     ########################################
@@ -563,7 +557,6 @@ def train_multihopkg(
 
             if torch.isnan(pg_loss).any():
                 logger.error("NaN detected in the loss. Aborting training.")
-                # pdb.set_trace()
 
             # Logg the mean, std, min, max of the rewards
             reinforce_terms_mean = pg_loss.mean()
@@ -578,9 +571,6 @@ def train_multihopkg(
 
             logger.debug("Bout to go backwords")
             reinforce_terms_mean.backward()
-
-            # TODO: get grad distribution parameters,
-            # Inspecting vanishing gradient
             
             if sample_offset_idx == 0:
 
@@ -593,9 +583,8 @@ def train_multihopkg(
             if torch.all(nav_agent.mu_layer.weight.grad == 0):
                 logger.warning("Gradients are zero for mu_layer!")
 
-            # TODO: get grad distribution parameters,
+
             # Inspecting vanishing gradient
-            
             if sample_offset_idx % num_batches_till_eval == 0 and verbose:
                 # Retrieve named parameters from the optimizer
                 named_params = [
@@ -619,15 +608,33 @@ def train_multihopkg(
                         grads = param.grad.detach().cpu()
                         weights = param.detach().cpu()
 
-                        write_parameters(grads, name, "Gradient", writer, epoch_id)
-                        write_parameters(weights, name, "Weights", writer, epoch_id)
+                        dist_tracker.write_dist_parameters(grads, name, "Gradient", writer, epoch_id)
+                        dist_tracker.write_dist_parameters(weights, name, "Weights", writer, epoch_id)
 
                         if wandb_on:
                             wandb.log({f"{name}/Gradient": wandb.Histogram(grads.numpy().flatten())})
                             wandb.log({f"{name}/Weights": wandb.Histogram(weights.numpy().flatten())})
                         elif visualize:
-                            write_histogram(grads.numpy().flatten(), name, 'g', "Gradient Histogram", "Grad Value", "Frequency", writer, epoch_id)
-                            write_histogram(weights.numpy().flatten(), name, 'b', "Weights Histogram", "Weight Value", "Frequency", writer, epoch_id)
+                            dist_tracker.write_dist_histogram(
+                                grads.numpy().flatten(),
+                                name, 
+                                'g', 
+                                "Gradient Histogram", 
+                                "Grad Value", 
+                                "Frequency", 
+                                writer, 
+                                epoch_id
+                            )
+                            dist_tracker.write_dist_histogram(
+                                weights.numpy().flatten(), 
+                                name, 
+                                'b', 
+                                "Weights Histogram", 
+                                "Weight Value", 
+                                "Frequency", 
+                                writer, 
+                                epoch_id
+                            )
 
             optimizer.step()
             if wandb_on:
@@ -636,44 +643,6 @@ def train_multihopkg(
                 wandb.log({"train/pg_loss": loss_item})
 
             batch_count += 1
-
-# TODO: Move this to a separate file
-def write_parameters(data: torch.Tensor, layer_name: str, value_type: str, writer: SummaryWriter, epoch_id: int):
-    mean = data.mean().item()
-    var = data.var().item()
-
-    writer.add_scalar(f'{layer_name}/{value_type} Mean', mean, epoch_id)
-    writer.add_scalar(f'{layer_name}/{value_type} Var', var, epoch_id)
-
-# TODO: Move this to a separate file
-def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, xlabel: str, ylabel: str, writer: SummaryWriter, epoch_id: int):
-
-    plt.figure(1)
-    plt.hist(data, bins=50, alpha=0.75, color=color)
-    plt.title(f"{layer_name} {title}")
-    plt.xlabel(f"{xlabel}")
-    plt.ylabel(f"{ylabel}")
-
-    # Show the grid
-    plt.grid(True)
-
-    # Save the histogram to a BytesIO buffer
-    hist_buf = io.BytesIO()
-    plt.savefig(hist_buf, format="png")
-    hist_buf.seek(0)
-
-    # Convert the buffer content to an image and then to a NumPy array in HWC format
-    hist_image = Image.open(hist_buf)
-    hist_image_np = np.array(hist_image)
-
-    # Add the histogram to TensorBoard
-    writer.add_image(
-        f"{layer_name}/{title}", hist_image_np, epoch_id, dataformats="HWC"
-    )
-
-    # Close the buffer
-    hist_buf.close()
-    plt.close()
 
 
 # TODO: Remove if unused
@@ -804,7 +773,7 @@ def rollout(
 
         llm_rewards.append(llm_reward)
 
-        # TODO: Make this more generic, so that non-rotational models can also be used
+        # TODO: Make this more general, so that non-rotational models can also be used
         kg_intrinsic_reward = angular_difference(
             observations.kge_cur_pos.unsqueeze(1)/(env.knowledge_graph.embedding_range.item()/torch.pi),
             answer_tensor/(env.knowledge_graph.embedding_range.item()/torch.pi),
@@ -813,8 +782,6 @@ def rollout(
 
         # TODO: Ensure the that the model stays within range of answer, otherwise set kg_done back to false so intrinsic reward kicks back in.
         kg_rewards.append(kg_dones*kg_extrinsic_rewards - torch.logical_not(kg_dones)*kg_intrinsic_reward) # Merging positive environment rewards with negative intrinsic ones
-
-        # TODO: Make obseervations not rely on the question
 
         ########################################
         # Log Stuff for across batch
@@ -851,60 +818,6 @@ def rollout(
     # Return Rewards of Rollout as a Tensor
     return log_action_probs, llm_rewards, kg_rewards, eval_metrics
 
-# TODO: Move this to a separate file
-def load_qa_data(
-    cached_metadata_path: str,
-    raw_QAData_path,
-    question_tokenizer_name: str,
-    answer_tokenizer_name: str,
-    entity2id: Dict[str, int],
-    relation2id: Dict[str, int], 
-    force_recompute: bool = False,
-):
-
-    if os.path.exists(cached_metadata_path) and not force_recompute:
-        logger.info(
-            f"\033[93m Found cache for the QA data {cached_metadata_path} will load it instead of working on {raw_QAData_path}. \033[0m"
-        )
-        # Read the first line of the raw csv to count the number of columns
-        train_metadata = json.load(open(cached_metadata_path.format(question_tokenizer_name, answer_tokenizer_name)))
-        saved_paths: Dict[str, str] = train_metadata["saved_paths"]
-
-        train_df = pd.read_parquet(saved_paths["train"])
-        # TODO: Eventually use this to avoid data leakage
-        dev_df = pd.read_parquet(saved_paths["dev"])
-        test_df = pd.read_parquet(saved_paths["test"])
-
-        # Ensure that we are not reading them integers as strings, but also not as floats
-        logger.info(
-            f"Loaded cached data from \033[93m\033[4m{json.dumps(cached_metadata_path,indent=4)} \033[0m"
-        )
-    else:
-        ########################################
-        # Actually compute the data.
-        ########################################
-        logger.info(
-            f"\033[93m Did not find cache for the QA data {cached_metadata_path}. Will now process it from {raw_QAData_path} \033[0m"
-        )
-        question_tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
-        answer_tokenzier   = AutoTokenizer.from_pretrained(answer_tokenizer_name)
-        df_split, train_metadata = ( # Includes shuffling
-            data_utils.process_and_cache_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
-                raw_QAData_path,
-                cached_metadata_path,
-                question_tokenizer,
-                answer_tokenzier,
-                entity2id,
-                relation2id,
-            )
-        )
-        train_df, dev_df, test_df = df_split.train, df_split.dev, df_split.test
-        logger.info(
-            f"Done. Result dumped at : \n\033[93m\033[4m{train_metadata['saved_paths']}\033[0m"
-        )
-
-    return train_df, dev_df, train_metadata
-
 
 def main():
     # By default we run the config
@@ -928,13 +841,14 @@ def main():
     id2ent, ent2id, id2rel, rel2id =  data_utils.load_dictionaries(args.data_dir)
 
     # Load the QA Dataset
-    train_df, dev_df, train_metadata = load_qa_data(
+    train_df, dev_df, train_metadata = data_utils.load_qa_data(
         cached_metadata_path=args.cached_QAMetaData_path,
         raw_QAData_path=args.raw_QAData_path,
         question_tokenizer_name=args.question_tokenizer_name,
         answer_tokenizer_name=args.answer_tokenizer_name,
         entity2id=ent2id,
         relation2id=rel2id,
+        logger=logger,
         force_recompute=args.force_data_prepro
     )
     if not isinstance(dev_df, pd.DataFrame) or not isinstance(train_df, pd.DataFrame):
@@ -1015,6 +929,7 @@ def main():
             nlist=100,
         )
 
+    # TODO: Improve Visualization for both rotational and non-rotational models
     if args.visualize:
         # Train the pca, and also get the emebeddings of the graph as an array
         pca = PCA(n_components=2)
