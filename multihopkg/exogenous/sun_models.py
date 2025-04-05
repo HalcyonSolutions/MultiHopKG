@@ -19,6 +19,7 @@ from sklearn.metrics import average_precision_score
 from torch.utils.data import DataLoader, Dataset
 
 from multihopkg.utils.convenience import sample_random_entity
+from multihopkg.emb.operations import normalize_angle_smooth
 
 class KGEModel(nn.Module):
 
@@ -79,10 +80,21 @@ class KGEModel(nn.Module):
         if model_name == 'ComplEx' and (not double_entity_embedding or not double_relation_embedding):
             raise ValueError('ComplEx should use --double_entity_embedding and --double_relation_embedding')
         
+        # Initialize the model function dictionary once
+        self.model_func = {
+            'TransE': self.TransE,
+            'DistMult': self.DistMult,
+            'ComplEx': self.ComplEx,
+            'RotatE': self.RotatE,
+            'pRotatE': self.pRotatE
+        }
+
         self.centroid = calculate_entity_centroid(self.entity_embedding)
+        
         self.flexible_func = {
             "RotatE": self.flexible_forward_rotate,
             "pRotatE": self.flexible_forward_protate,
+            "TransE": self.flexible_forward_transe,
         }
 
     def load_embeddings(self, entity_embedding: np.ndarray, relation_embedding: np.ndarray):
@@ -228,17 +240,10 @@ class KGEModel(nn.Module):
             
         else:
             raise ValueError('mode %s not supported' % mode)
-            
-        model_func = {
-            'TransE': self.TransE,
-            'DistMult': self.DistMult,
-            'ComplEx': self.ComplEx,
-            'RotatE': self.RotatE,
-            'pRotatE': self.pRotatE
-        }
+
         
-        if self.model_name in model_func:
-            score = model_func[self.model_name](head, relation, tail, mode)
+        if self.model_name in self.model_func:
+            score = self.model_func[self.model_name](head, relation, tail, mode)
         else:
             raise ValueError('model %s not supported' % self.model_name)
         
@@ -508,21 +513,38 @@ class KGEModel(nn.Module):
 
         return metrics
 
+
     def flexible_forward_rotate(
         self, cur_states: torch.Tensor, cur_actions: torch.Tensor
     ) -> torch.Tensor:
         """
-        Will be a way of executing continuous actions here
+        Applies a phase translation to the head entity given the relation. 
+        This is meant to work on the original RotatE model.
         """
-        batch_size = cur_states.shape[0]
 
-        head = cur_states
-        relation = cur_actions
-        tail = self.RotatE_Eval(head, relation)
+        tail = self.RotatE_Eval(cur_states, cur_actions)
 
         return tail
 
+
     def RotatE_Eval(self, head, relation):
+        """
+        Calculates the phase translation of the head entity given the relation.
+        Assumes that the entity is a complex number in a flatten vector form,
+        where the first half is the real and the latter half the imaginary.
+        The relation is a phase translation in radians.
+        
+        NOTE: The translation does not change the magnitude of the head entity, despite
+        the fact that the entities all have different magnitudes. This function only offers
+        a phase translation, not a magnitude translation.
+
+        args:
+            head: torch.Tensor. Head embedding (flattened complex number)
+            relation: torch.Tensor. Relation embedding (flattened complex number)
+
+        returns:
+            torch.Tensor. Translated head embedding (flattened complex number)
+        """
 
         re_head, im_head = torch.chunk(head, 2, dim=1)
 
@@ -536,12 +558,13 @@ class KGEModel(nn.Module):
 
         return torch.cat([re_est_tail, im_est_tail], dim=-1)
 
+
     def flexible_forward_protate(
         self, cur_states: torch.Tensor, cur_actions: torch.Tensor
     ) -> torch.Tensor:
         """
         Applies a phase rotation to the head entity given the relation. 
-        This is meant to work on the original RotatE model.
+        This is meant to work on the original pRotatE model.
         """
         head_rad = cur_states/(self.embedding_range.item()/torch.pi)
         
@@ -549,9 +572,10 @@ class KGEModel(nn.Module):
 
         # TODO: VERY IMPORTANT: Verify if this doesn't break the learning process
         # ! Observation: If there is no normalization, there is NaN somewhere in the log_prob or rewards
-        rotation_rad = torch.atan2(torch.sin(rotation_rad), torch.cos(rotation_rad)) # normalize the angle to [-pi, pi] since it is cyclic
+        rotation_rad = normalize_angle_smooth(rotation_rad) # smooth normalization to [-pi, pi] since it is cyclic, using trigonometric functions
 
         return rotation_rad * (self.embedding_range.item()/torch.pi)
+
 
     def pRotatE_Eval(self, phase_head, relation):
         """
@@ -572,6 +596,35 @@ class KGEModel(nn.Module):
         phase_translation = phase_head + phase_relation
 
         return phase_translation
+    
+
+    def flexible_forward_transe(
+        self, cur_states: torch.Tensor, cur_actions: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Applies a euclidean translation to the head entity given the relation. 
+        This is meant to work on the original TransE model.
+        """
+
+        tail = self.TransE_Eval(cur_states, cur_actions)
+
+        return tail
+
+
+    def TransE_Eval(self, head, relation):
+        """
+        Calculates the euclidean translation of the head entity given the relation.
+        Assumes that the entity is represented as a vector (not a phase nor complex number).
+
+        args:
+            head: torch.Tensor. Head embedding
+            relation: torch.Tensor. Relation embedding
+        
+        returns:
+            torch.Tensor. Translated head embedding
+        """
+        return head + relation
+
 
     def flexible_forward(self, cur_states: torch.Tensor, cur_actions: torch.Tensor) -> torch.Tensor:
         """
@@ -579,7 +632,11 @@ class KGEModel(nn.Module):
         This function is used for the flexible action space.
         """
         
-        return self.flexible_func[self.model_name](cur_states, cur_actions)
+        if self.model_name in self.flexible_func:
+            return self.flexible_func[self.model_name](cur_states, cur_actions)
+        else:
+            raise ValueError(f"Model {self.model_name} does not support flexible forward pass.")
+
 
     def get_centroid(self) -> torch.Tensor:
         return self.centroid
