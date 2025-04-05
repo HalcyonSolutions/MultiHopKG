@@ -19,7 +19,6 @@ import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import var_cuda, zeros_var_cuda
 from multihopkg.vector_search import ANN_IndexMan
 from multihopkg.environments import Environment, Observation
-from multihopkg.emb.operations import angular_difference
 from typing import Tuple, List, Dict, Optional
 import pdb
 
@@ -658,15 +657,10 @@ class ITLGraphEnvironment(Environment, nn.Module):
         )
 
         # No gradients are calculated here
-        # TODO: Make sure this is compatible with both non-rotational and rotational embeddings
         with torch.no_grad():
-            angles_diff = angular_difference(
-                self.answer_embeddings/(self.knowledge_graph.embedding_range.item()/torch.pi), 
-                self.current_position/(self.knowledge_graph.embedding_range.item()/torch.pi),
-                smooth=False
-            )
+            diff = self.knowledge_graph.absolute_difference(self.answer_embeddings, self.current_position)
             
-            found_ans = torch.norm(angles_diff, dim=-1)[:, torch.newaxis] < self.eta
+            found_ans = torch.norm(diff, dim=-1)[:, torch.newaxis] < self.eta
             torch.logical_or(self.answer_found, found_ans, out=self.answer_found)
             extrinsic_reward = found_ans.float()
 
@@ -795,8 +789,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.current_step_no = 0
 
         # get the embeddings of the answer entities
-        self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent) # (batch_size, emb_dim)
-        self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device)
+        self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent).detach() # (batch_size, emb_dim)
+        self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device).detach() # (batch_size, 1)
 
         init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), relevant_ent)
         self.current_position = init_emb.clone()

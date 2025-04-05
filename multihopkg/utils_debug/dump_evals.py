@@ -3,18 +3,14 @@ import pandas as pd
 import torch
 from torch.utils.tensorboard import SummaryWriter 
 from transformers import PreTrainedTokenizer
-from PIL import Image
 
 import wandb
 import logging
-import io
-import time
 import sys
 
 from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
-from multihopkg.emb.operations import angular_difference, normalize_angle
 
-from typing import Dict, Any, List, Union
+from typing import Dict, Any, Union, Callable
 
 def dump_evaluation_metrics(
     path_to_log: str,
@@ -24,11 +20,14 @@ def dump_evaluation_metrics(
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
     answer_kge_tensor:torch.Tensor,
-    embedding_range: float,
     id2entity: Dict[int, str],
     id2relations: Dict[int, str],
     entity2title: Dict[str, str],
     relation2title: Dict[str, str],
+    kg_model_name: str,
+    kg_ent_distance_func: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    kg_rel_denormalize_func: Callable[[torch.Tensor], torch.Tensor],
+    kg_rel_wrap_func: Callable[[torch.Tensor], torch.Tensor],
     iteration: int,
     wandb_on: bool,
     logger: logging.Logger,
@@ -61,6 +60,15 @@ def dump_evaluation_metrics(
     if not all(assertions):
         raise ValueError("Evaluation metrics dictionary is missing some keys")
 
+    if kg_model_name == "pRotatE":
+        unit_type = "(deg)"
+        translation_type = "Rotation"
+        conversion_constant = 180/torch.pi # convert radians to degrees
+    else:
+        unit_type = ""
+        translation_type = "Translation"
+        conversion_constant = 1
+
     log_file = open(path_to_log, "w")
 
     batch_size = evaluation_metrics_dictionary["sampled_actions"].shape[1]
@@ -73,6 +81,8 @@ def dump_evaluation_metrics(
     wandb_realAnswer = []
     wandb_steps = []
     wandb_positions = []
+    distance_between_position_avg = []
+    distance_to_answer_avg = []
     with open(path_to_log) as f:
         for element_id in range(batch_size):
 
@@ -181,10 +191,10 @@ def dump_evaluation_metrics(
 
             action_distance = []
             for i0 in range(kge_action.shape[0]):
-                angle = kge_action[i0].cpu()/(embedding_range/torch.pi)
-                action_distance.append(f"{(180/torch.pi)*normalize_angle(angle).abs().sum().item():.2e}") # calculates how much rotation was done
+                action_normalized = kg_rel_wrap_func(kg_rel_denormalize_func(kge_action[i0])).abs().sum().item()
+                action_distance.append(f"{conversion_constant*action_normalized:.2e}") # calculates how much translation was done
             
-            log_file.write(f"Cummulative Embedding Rotation (deg):\n {action_distance} \n")
+            log_file.write(f"Cummulative Action {translation_type} {unit_type}:\n {action_distance} \n")
 
             position_distance = []
             position_distance_avg = []
@@ -192,25 +202,27 @@ def dump_evaluation_metrics(
             closest_emb_distance = []
             
             for i0 in range(kge_cur_pos.shape[0]):
-                diff = angular_difference(kge_cur_pos[i0]/(embedding_range/torch.pi), kge_prev_pos[i0]/(embedding_range/torch.pi), smooth=False)
-                rotational_total = (180/torch.pi)*(diff.sum().item())
-                rotational_avg = (180/torch.pi)*(diff.mean().item())
+                diff = kg_ent_distance_func(kge_cur_pos[i0], kge_prev_pos[i0])
+                diff_total = conversion_constant*diff.sum().item()
+                diff_avg = conversion_constant*diff.mean().item()
 
-                diff_ans = angular_difference(kge_cur_pos[i0]/(embedding_range/torch.pi), ans_emb/(embedding_range/torch.pi), smooth=False)
-                rotation_to_answer = (180/torch.pi)*(diff_ans.mean().item())
+                diff_ans = kg_ent_distance_func(kge_cur_pos[i0], ans_emb)
+                diff_ans = conversion_constant*diff_ans.mean().item()
 
-                diff_closest = angular_difference(kge_cur_pos[i0]/(embedding_range/torch.pi), entity_emb[i0]/(embedding_range/torch.pi), smooth=False)
-                rotation_to_closest = (180/torch.pi)*(diff_closest.mean().item())
+                diff_closest = kg_ent_distance_func(kge_cur_pos[i0], entity_emb[i0])
+                diff_closest = conversion_constant*diff_closest.mean().item()
 
-                position_distance.append(f"{rotational_total:.2e}")
-                position_distance_avg.append(f"{rotational_avg:.2e}")
-                position_distance_ans.append(f"{rotation_to_answer:.2e}")
-                closest_emb_distance.append(f"{rotation_to_closest:.2e}")
+                position_distance.append(f"{diff_total:.2e}")
+                position_distance_avg.append(f"{diff_avg:.2e}")
+                position_distance_ans.append(f"{diff_ans:.2e}")
+                closest_emb_distance.append(f"{diff_closest:.2e}")
+                distance_between_position_avg.append(diff_avg)
+                distance_to_answer_avg.append(diff_ans)
 
-            log_file.write(f"Cummulative Rotation between KGE Positions (deg):\n {position_distance} \n") # This results should match action distance for pRotatE, otherwise something is wrong, sort of a sanity check
-            log_file.write(f"Avg. Rotation between KGE Positions (deg):\n {position_distance_avg} \n")
-            log_file.write(f"Avg. Rotational Debt between Current KGE and Answer (deg):\n {position_distance_ans} \n")
-            log_file.write(f"Avg. Rotation Debt between Current KGE Pos. and Closest Entity (deg):\n {closest_emb_distance} \n")
+            log_file.write(f"Cummulative {translation_type} between KGE Positions {unit_type}:\n {position_distance} \n") # This results should match action distance for pRotatE, otherwise something is wrong, sort of a sanity check
+            log_file.write(f"Avg. {translation_type} between KGE Positions {unit_type}:\n {position_distance_avg} \n")
+            log_file.write(f"Avg. {translation_type} Debt between Current KGE and Answer {unit_type}:\n {position_distance_ans} \n")
+            log_file.write(f"Avg. {translation_type} Debt between Current KGE Pos. and Closest Entity {unit_type}:\n {closest_emb_distance} \n")
 
             wandb_positions.append(" --> ".join(position_distance))
 
@@ -242,6 +254,12 @@ def dump_evaluation_metrics(
     'Loss'
     pg_loss = evaluation_metrics_dictionary["pg_loss"]
     writer.add_scalar('PG Loss', pg_loss[:,-1].mean(), iteration) # Only consider the last step
+
+    'Distance Metrics'
+    distance_between_position_avg = sum(distance_between_position_avg)/len(distance_between_position_avg)
+    distance_to_answer_avg = sum(distance_to_answer_avg)/len(distance_to_answer_avg)
+    writer.add_scalar('Distance/Position', distance_between_position_avg, iteration)
+    writer.add_scalar('Distance/Answer', distance_to_answer_avg, iteration)
     ########################################
     # Report to Wandb
     ########################################

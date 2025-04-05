@@ -49,7 +49,6 @@ from multihopkg.utils.setup import set_seeds
 from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
 from multihopkg.logs import torch_module_logging
 from multihopkg.utils.wandb import histogram_all_modules
-from multihopkg.emb.operations import angular_difference
 from multihopkg.utils_debug.dump_evals import dump_evaluation_metrics
 
 
@@ -520,11 +519,14 @@ def evaluate_training(
             question_tokenizer=question_tokenizer,
             answer_tokenizer=answer_tokenizer,
             answer_kge_tensor=answer_kge_tensor,
-            embedding_range=env.knowledge_graph.embedding_range.item(),
             id2entity=env.id2entity,					   
             id2relations=env.id2relation,
             entity2title=env.entity2title,
             relation2title=env.relation2title,
+            kg_model_name=env.knowledge_graph.model_name,
+            kg_ent_distance_func=env.knowledge_graph.absolute_difference,
+            kg_rel_denormalize_func=env.knowledge_graph.denormalize_relation,
+            kg_rel_wrap_func=env.knowledge_graph.wrap_relation,
             iteration=iteration,
             writer=writer,						  
             wandb_on=wandb_on,
@@ -981,11 +983,9 @@ def rollout(
 
         llm_rewards.append(llm_reward)
 
-        # TODO: Make this more general, so that non-rotational models can also be used
-        kg_intrinsic_reward = angular_difference(
-            observations.kge_cur_pos.unsqueeze(1)/(env.knowledge_graph.embedding_range.item()/torch.pi),
-            answer_tensor/(env.knowledge_graph.embedding_range.item()/torch.pi),
-            smooth=True
+        kg_intrinsic_reward = env.knowledge_graph.absolute_difference(
+            observations.kge_cur_pos.unsqueeze(1),
+            answer_tensor,
         ).norm(dim=-1)
 
         # TODO: Ensure the that the model stays within range of answer, otherwise set kg_done back to false so intrinsic reward kicks back in.

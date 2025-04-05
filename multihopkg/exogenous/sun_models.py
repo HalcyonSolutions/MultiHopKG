@@ -19,7 +19,7 @@ from sklearn.metrics import average_precision_score
 from torch.utils.data import DataLoader, Dataset
 
 from multihopkg.utils.convenience import sample_random_entity
-from multihopkg.emb.operations import normalize_angle_smooth
+from multihopkg.emb.operations import normalize_angle_smooth, normalize_angle, angular_difference
 
 class KGEModel(nn.Module):
 
@@ -80,7 +80,9 @@ class KGEModel(nn.Module):
         if model_name == 'ComplEx' and (not double_entity_embedding or not double_relation_embedding):
             raise ValueError('ComplEx should use --double_entity_embedding and --double_relation_embedding')
         
-        # Initialize the model function dictionary once
+        self.centroid = calculate_entity_centroid(self.entity_embedding)
+
+        # Initialize the model forward function dictionary once
         self.model_func = {
             'TransE': self.TransE,
             'DistMult': self.DistMult,
@@ -88,13 +90,45 @@ class KGEModel(nn.Module):
             'RotatE': self.RotatE,
             'pRotatE': self.pRotatE
         }
-
-        self.centroid = calculate_entity_centroid(self.entity_embedding)
         
+        # Initialize the flexible forward function dictionary once
         self.flexible_func = {
+            "TransE": self.flexible_forward_transe,
             "RotatE": self.flexible_forward_rotate,
             "pRotatE": self.flexible_forward_protate,
-            "TransE": self.flexible_forward_transe,
+        }
+
+        # Initialize the absolute difference function dictionary once
+        self.absolute_difference_func = {
+            "TransE": self.absolute_difference_euclidean,
+            "RotatE": self.absolute_difference_euclidean,
+            "pRotatE": self.absolute_difference_phase,
+        }
+
+        # Initialize the denormalize and wrap functions for relations
+        self.relation_denormalize_func = {
+            "TransE": lambda x: x, # no operation is needed
+            "RotatE": self.denormalize_embedding, # also a phase
+            "pRotatE": self.denormalize_embedding,
+        }
+
+        self.relation_wrap_func = {
+            "TransE": lambda x: x, # no operation is needed
+            "RotatE": self.wrap_rotate_embedding, # also a phase
+            "pRotatE": self.wrap_rotate_embedding,
+        }
+
+        # Initialize the denormalize and wrap functions for entities
+        self.entity_denormalize_func = {
+            "TransE": lambda x: x, # no operation is needed
+            "RotatE": lambda x: x, # no operation is needed, complex number
+            "pRotatE": self.denormalize_embedding,
+        }
+
+        self.entity_wrap_func = {
+            "TransE": lambda x: x, # no operation is needed
+            "RotatE": lambda x: x, # no operation is needed, complex number
+            "pRotatE": self.wrap_rotate_embedding,
         }
 
     def load_embeddings(self, entity_embedding: np.ndarray, relation_embedding: np.ndarray):
@@ -161,6 +195,8 @@ class KGEModel(nn.Module):
         
         return model
 
+    #-----------------------------------------------------------------------
+    'Forward Function'
         
     def forward(self, sample, mode='single'):
         '''
@@ -249,6 +285,9 @@ class KGEModel(nn.Module):
         
         return score
     
+    #-----------------------------------------------------------------------
+    'Scoring Functions'
+
     def TransE(self, head, relation, tail, mode):
         if mode == 'head-batch':
             score = head + (relation - tail)
@@ -332,6 +371,9 @@ class KGEModel(nn.Module):
         score = self.gamma.item() - score.sum(dim = 2) * self.modulus
         return score
     
+    #-----------------------------------------------------------------------
+    'Training and Evaluation'
+
     @staticmethod
     def train_step(model, optimizer, train_iterator, args):
         '''
@@ -513,6 +555,8 @@ class KGEModel(nn.Module):
 
         return metrics
 
+    #-----------------------------------------------------------------------
+    'Translation in Embedding Space'
 
     def flexible_forward_rotate(
         self, cur_states: torch.Tensor, cur_actions: torch.Tensor
@@ -540,7 +584,7 @@ class KGEModel(nn.Module):
 
         args:
             head: torch.Tensor. Head embedding (flattened complex number)
-            relation: torch.Tensor. Relation embedding (flattened complex number)
+            relation: torch.Tensor. Relation embedding (phase in radians)
 
         returns:
             torch.Tensor. Translated head embedding (flattened complex number)
@@ -548,7 +592,7 @@ class KGEModel(nn.Module):
 
         re_head, im_head = torch.chunk(head, 2, dim=1)
 
-        phase_relation = relation / (self.embedding_range.item() / torch.pi)
+        phase_relation = self.denormalize_embedding(relation)
 
         re_relation = torch.cos(phase_relation)
         im_relation = torch.sin(phase_relation)
@@ -566,7 +610,7 @@ class KGEModel(nn.Module):
         Applies a phase rotation to the head entity given the relation. 
         This is meant to work on the original pRotatE model.
         """
-        head_rad = cur_states/(self.embedding_range.item()/torch.pi)
+        head_rad = self.denormalize_embedding(cur_states)
         
         rotation_rad = self.pRotatE_Eval(head_rad, cur_actions)        # apply the phase rotation, result in rads   
 
@@ -574,7 +618,7 @@ class KGEModel(nn.Module):
         # ! Observation: If there is no normalization, there is NaN somewhere in the log_prob or rewards
         rotation_rad = normalize_angle_smooth(rotation_rad) # smooth normalization to [-pi, pi] since it is cyclic, using trigonometric functions
 
-        return rotation_rad * (self.embedding_range.item()/torch.pi)
+        return self.normalize_embedding(rotation_rad)
 
 
     def pRotatE_Eval(self, phase_head, relation):
@@ -591,7 +635,7 @@ class KGEModel(nn.Module):
         """
         
         #Make phases of entities and relations uniformly distributed in [-pi, pi]
-        phase_relation = relation/(self.embedding_range.item()/torch.pi)
+        phase_relation = self.denormalize_embedding(relation)
 
         phase_translation = phase_head + phase_relation
 
@@ -637,6 +681,128 @@ class KGEModel(nn.Module):
         else:
             raise ValueError(f"Model {self.model_name} does not support flexible forward pass.")
 
+    #-----------------------------------------------------------------------
+    'Distance Calculations'
+
+    def absolute_difference_euclidean(self, head: torch.Tensor, tail: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate the absolute difference between two vectors in Euclidean space.
+        Also used by RotatE, but not pRotatE.
+
+        args:
+            head: torch.Tensor. Head embedding
+            tail: torch.Tensor. Tail embedding
+        
+        returns:
+            torch.Tensor. Absolute difference between head and tail embeddings
+        """
+        return torch.abs(head - tail)
+    
+
+    def absolute_difference_phase(self, head: torch.Tensor, tail: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate the absolute difference between two vectors in phase space.
+        
+        args:
+            head: torch.Tensor. Head embedding (in radians)
+            tail: torch.Tensor. Tail embedding (in radians)
+        
+        returns:
+            torch.Tensor. Absolute difference between head and tail embeddings
+        """
+        head = self.denormalize_embedding(head)
+        tail = self.denormalize_embedding(tail)
+        return angular_difference(head, tail, smooth=torch.is_grad_enabled()) # if gradient is required, use smooth normalization
+        
+    
+    def absolute_difference(self, head: torch.Tensor, tail: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate the absolute difference between two vectors.
+        Works for both Euclidean and Rotational space.
+        Compatible with gradient calculation and none gradient calculation.
+        
+        args:
+            head: torch.Tensor. Head embedding
+            tail: torch.Tensor. Tail embedding
+        
+        returns:
+            torch.Tensor. Absolute difference between head and tail embeddings
+        """
+        
+        if self.model_name in self.absolute_difference_func:
+            return self.absolute_difference_func[self.model_name](head, tail)
+        else:
+            raise ValueError(f"Model {self.model_name} does not support absolute difference calculation.")
+
+    #-----------------------------------------------------------------------
+    'Normalization, Denormalization, and Wrapping'
+
+    def denormalize_embedding(self, embedding: torch.Tensor) -> torch.Tensor:
+        """
+        Process the embedding tensor to ensure it is in the correct format.
+        
+        args:
+            embedding: torch.Tensor. Action tensor
+        
+        returns:
+            torch.Tensor. Processed embedding tensor
+        """
+        return embedding/(self.embedding_range.item()/torch.pi)
+
+
+    def normalize_embedding(self, embedding: torch.Tensor) -> torch.Tensor:
+        """
+        Process the embedding tensor to ensure it is in the correct format.
+        
+        args:
+            embedding: torch.Tensor. Action tensor
+        
+        returns:
+            torch.Tensor. Processed embedding tensor
+        """
+        return embedding * (self.embedding_range.item()/torch.pi)
+    
+    def wrap_rotate_embedding(self, embedding: torch.Tensor) -> torch.Tensor:
+        """
+        Wrap the embedding tensor to ensure it is in the correct format.
+        
+        args:
+            embedding: torch.Tensor. Action tensor
+        
+        returns:
+            torch.Tensor. Wrapped embedding tensor
+        """
+        if torch.is_grad_enabled():
+            return normalize_angle_smooth(embedding)
+        else:
+            return normalize_angle(embedding)
+
+    def denormalize_relation(self, relation: torch.Tensor) -> torch.Tensor:
+        if self.model_name in self.relation_denormalize_func:
+            return self.relation_denormalize_func[self.model_name](relation)
+        else:
+            raise ValueError(f"Model {self.model_name} does not support relation denormalization.")
+    
+    def wrap_relation(self, relation: torch.Tensor) -> torch.Tensor:
+        if self.model_name in self.relation_wrap_func:
+            return self.relation_wrap_func[self.model_name](relation)
+        else:
+            raise ValueError(f"Model {self.model_name} does not support relation wrapping.")
+    
+    def denormalize_entity(self, entity: torch.Tensor) -> torch.Tensor:
+        if self.model_name in self.entity_denormalize_func:
+            return self.entity_denormalize_func[self.model_name](entity)
+        else:
+            raise ValueError(f"Model {self.model_name} does not support entity denormalization.")
+    
+    def wrap_entity(self, entity: torch.Tensor) -> torch.Tensor:
+        if self.model_name in self.entity_wrap_func:
+            return self.entity_wrap_func[self.model_name](entity)
+        else:
+            raise ValueError(f"Model {self.model_name} does not support entity wrapping.")
+
+    #-----------------------------------------------------------------------
+    'Getters'
 
     def get_centroid(self) -> torch.Tensor:
         return self.centroid
