@@ -743,6 +743,8 @@ def train_multihopkg(
             ########################################
             # Training
             ########################################
+            'Forward pass'
+
             optimizer.zero_grad()
             pg_loss, _ = batch_loop(
                 env, mini_batch, nav_agent, hunch_llm, steps_in_episode, bos_token_id, eos_token_id, pad_token_id
@@ -762,16 +764,19 @@ def train_multihopkg(
             # TODO: Uncomment and try: 
             pg_loss = tensor_normalization(pg_loss)
 
+            #---------------------------------
+            'Backward pass'
             logger.debug("Bout to go backwords")
             reinforce_terms_mean.backward()
             
+            #---------------------------------
+            'Gradient Tracking'
+
             if sample_offset_idx == 0:
 
                 # Ask for the DAG to be dumped
                 if track_gradients:
                     grad_logger.dump_visual_dag(destination_path=f"./figures/grads/dag_{epoch_id:02d}.png", figsize=(10, 100)) # type: ignore
-
-            optimizer.step()
 
             if torch.all(nav_agent.mu_layer.weight.grad == 0):
                 logger.warning("Gradients are zero for mu_layer!")
@@ -828,12 +833,16 @@ def train_multihopkg(
                                 writer, 
                                 epoch_id
                             )
-
-            optimizer.step()
+            
             if wandb_on:
                 loss_item = pg_loss.mean().item()
                 logger.info(f"Submitting train/pg_loss: {loss_item} to wandb")
                 wandb.log({"train/pg_loss": loss_item})
+
+            #---------------------------------
+            'Optimizer step'
+
+            optimizer.step()
 
             batch_count += 1
 
