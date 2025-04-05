@@ -60,6 +60,8 @@ def dump_evaluation_metrics(
     if not all(assertions):
         raise ValueError("Evaluation metrics dictionary is missing some keys")
 
+    assert not torch.is_grad_enabled(), "Gradient must NOT be enabled, otherwise is creates too much overhead!!"
+
     if kg_model_name == "pRotatE":
         unit_type = "(deg)"
         translation_type = "Rotation"

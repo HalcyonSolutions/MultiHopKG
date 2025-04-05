@@ -489,50 +489,60 @@ def evaluate_training(
         current_evaluations["pg_loss"] = pg_loss.detach().cpu()
         batch_cumulative_metrics["dev/pg_loss"].append(pg_loss.mean().item())
 
-    ########################################
-    # Take `current_evaluations` as
-    # a sample of batches and dump its results
-    ########################################
-    if verbose and logger:
-        graph_annotation = []
-        if env.entity2title:
-            for i0 in range(len(env.graph_annotation)):
-                if env.graph_annotation[i0] in env.entity2title.keys():
-                    graph_annotation.append(env.entity2title[env.graph_annotation[i0]])
-                else:
-                    graph_annotation.append("")
+        ########################################
+        # Take `current_evaluations` as
+        # a sample of batches and dump its results
+        ########################################
+        if verbose and logger:
+            graph_annotation = []
+            if env.entity2title:
+                for i0 in range(len(env.graph_annotation)):
+                    if env.graph_annotation[i0] in env.entity2title.keys():
+                        graph_annotation.append(env.entity2title[env.graph_annotation[i0]])
+                    else:
+                        graph_annotation.append("")
 
-        # eval_extras has variables that we need
-        just_dump_it_here = "./logs/evaluation_dumps.log"
+            # eval_extras has variables that we need
+            just_dump_it_here = "./logs/evaluation_dumps.log"
 
-        answer_kge_tensor = get_embeddings_from_indices(
-            env.knowledge_graph.entity_embedding,
-            torch.tensor(answer_id, dtype=torch.int),
-        ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
+            answer_kge_tensor = get_embeddings_from_indices(
+                env.knowledge_graph.entity_embedding,
+                torch.tensor(answer_id, dtype=torch.int),
+            ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
 
-        logger.warning(f"About to go into dump_evaluation_metrics")
-        dump_evaluation_metrics(
-            path_to_log=just_dump_it_here,
-            evaluation_metrics_dictionary=current_evaluations,
-            vector_entity_searcher=env.ann_index_manager_ent,															 
-            vector_rel_searcher=env.ann_index_manager_rel,
-            question_tokenizer=question_tokenizer,
-            answer_tokenizer=answer_tokenizer,
-            answer_kge_tensor=answer_kge_tensor,
-            id2entity=env.id2entity,					   
-            id2relations=env.id2relation,
-            entity2title=env.entity2title,
-            relation2title=env.relation2title,
-            kg_model_name=env.knowledge_graph.model_name,
-            kg_ent_distance_func=env.knowledge_graph.absolute_difference,
-            kg_rel_denormalize_func=env.knowledge_graph.denormalize_relation,
-            kg_rel_wrap_func=env.knowledge_graph.wrap_relation,
-            iteration=iteration,
-            writer=writer,						  
-            wandb_on=wandb_on,
-            logger=logger,
-        )
-        logger.warning(f"We just left dump_evaluation_metrics")
+            logger.warning(f"About to go into dump_evaluation_metrics")
+            dump_evaluation_metrics(
+                path_to_log=just_dump_it_here,
+                evaluation_metrics_dictionary=current_evaluations,
+                vector_entity_searcher=env.ann_index_manager_ent,															 
+                vector_rel_searcher=env.ann_index_manager_rel,
+                question_tokenizer=question_tokenizer,
+                answer_tokenizer=answer_tokenizer,
+                answer_kge_tensor=answer_kge_tensor,
+                id2entity=env.id2entity,					   
+                id2relations=env.id2relation,
+                entity2title=env.entity2title,
+                relation2title=env.relation2title,
+                kg_model_name=env.knowledge_graph.model_name,
+                kg_ent_distance_func=env.knowledge_graph.absolute_difference,
+                kg_rel_denormalize_func=env.knowledge_graph.denormalize_relation,
+                kg_rel_wrap_func=env.knowledge_graph.wrap_relation,
+                iteration=iteration,
+                writer=writer,						  
+                wandb_on=wandb_on,
+                logger=logger,
+            )
+            logger.warning(f"We just left dump_evaluation_metrics")
+
+            logger.warning(f"Cleaning up the dev dictionaries")
+            
+            current_evaluations.clear()
+            eval_extras.clear()
+
+            if not mini_batch._is_view: # if a copy was created, delete after usage
+                del mini_batch
+            
+
 
 
     ########################################
