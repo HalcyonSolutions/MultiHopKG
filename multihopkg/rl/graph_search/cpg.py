@@ -5,7 +5,6 @@ from multihopkg.rl.graph_search.pn import GraphSearchPolicy, ITLGraphEnvironment
 from multihopkg.utils import ops
 import torch
 from torch import nn
-from multihopkg.knowledge_graph import ITLKnowledgeGraph
 from typing import Tuple
 import pdb
 
