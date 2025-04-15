@@ -511,7 +511,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         trained_pca,
         graph_pca,
         graph_annotation: str,
-        eta: float = 10.0, # For error margin in the distance, TODO: Must find a better value
+        epsilon: float = 0.1, # For error margin in the distance, TODO: Must find a better value
     ):
         super(ITLGraphEnvironment, self).__init__()
         # Should be injected via information extracted from Knowledge Grap
@@ -582,7 +582,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         self.answer_embeddings = None  # This is the embeddings of the answer (batch_size, entity_dim)
         self.answer_found = None       # This is a flag to denote if the answer has been already been found (batch_size, 1)
-        self.eta = eta                 # This is the error margin in the distance for finding the answer
+        self.epsilon = epsilon                 # This is the error margin in the distance for finding the answer
 
         # (self.W1, self.W2, self.W1Dropout, self.W2Dropout, self.path_encoder, self.concat_projector) = (
         (self.concat_projector, self.W2, self.W1Dropout, self.W2Dropout, _) = (
@@ -660,7 +660,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         with torch.no_grad():
             diff = self.knowledge_graph.absolute_difference(self.answer_embeddings, self.current_position)
             
-            found_ans = torch.norm(diff, dim=-1)[:, torch.newaxis] < self.eta
+            found_ans = torch.norm(diff, dim=-1)[:, torch.newaxis] < self.epsilon
             torch.logical_or(self.answer_found, found_ans, out=self.answer_found)
             extrinsic_reward = found_ans.float()
 

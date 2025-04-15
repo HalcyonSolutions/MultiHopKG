@@ -761,8 +761,8 @@ def train_multihopkg(
             reinforce_terms_max_item = pg_loss.max().item()
             logger.debug(f"Reinforce terms mean: {reinforce_terms_mean_item}, std: {reinforce_terms_std_item}, min: {reinforce_terms_min_item}, max: {reinforce_terms_max_item}")
 
-            # TODO: Uncomment and try: 
-            pg_loss = tensor_normalization(pg_loss)
+            # TODO: Uncomment and try: (but comment out the normalization in batch_loop and bacth_loop_dev)
+            # pg_loss = tensor_normalization(pg_loss)
 
             #---------------------------------
             'Backward pass'
@@ -1287,6 +1287,7 @@ def main():
         graph_pca=graph_pca,
         graph_annotation=graph_annotation,
         nav_start_emb_type=args.nav_start_emb_type,
+        epsilon = args.nav_epsilon_error,
     ).to(args.device)
 
     # Now we load this from the embedding models
