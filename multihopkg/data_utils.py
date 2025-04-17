@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 from rich import traceback
 from torch.nn import Embedding as nn_Embedding
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer, AutoTokenizer
 from sklearn.model_selection import train_test_split
 
 from multihopkg.utils.setup import get_git_root
@@ -755,7 +755,7 @@ def load_qa_data(
         question_tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
         answer_tokenzier   = AutoTokenizer.from_pretrained(answer_tokenizer_name)
         df_split, train_metadata = ( # Includes shuffling
-            data_utils.process_and_cache_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
+            process_and_cache_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
                 raw_QAData_path,
                 cached_metadata_path,
                 question_tokenizer,
