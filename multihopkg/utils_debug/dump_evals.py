@@ -49,9 +49,6 @@ def dump_evaluation_metrics(
         "kge_cur_pos" in evaluation_metrics_dictionary,
         "kge_prev_pos" in evaluation_metrics_dictionary,
         "kge_action" in evaluation_metrics_dictionary,
-        "hunch_llm_entropy" in evaluation_metrics_dictionary,
-        "hunch_llm_rewards" in evaluation_metrics_dictionary,
-        "hunch_llm_final_guesses" in evaluation_metrics_dictionary,
         "kg_extrinsic_rewards" in evaluation_metrics_dictionary,
         "kg_intrinsic_reward" in evaluation_metrics_dictionary,
         "kg_dones" in evaluation_metrics_dictionary,
@@ -59,6 +56,18 @@ def dump_evaluation_metrics(
     ]
     if not all(assertions):
         raise ValueError("Evaluation metrics dictionary is missing some keys")
+
+    llm_answered_enabled = False
+    if isinstance(answer_tokenizer, PreTrainedTokenizer):
+        additional_assertions = [
+            "hunch_llm_entropy" in evaluation_metrics_dictionary,
+            "hunch_llm_rewards" in evaluation_metrics_dictionary,
+            "hunch_llm_final_guesses" in evaluation_metrics_dictionary,
+        ]
+        if not all(additional_assertions):
+            raise ValueError("Evaluation metrics dictionary is missing some keys for LLM")
+        
+        llm_answered_enabled = True
 
     assert not torch.is_grad_enabled(), "Gradient must NOT be enabled, otherwise is creates too much overhead!!"
 
@@ -74,7 +83,7 @@ def dump_evaluation_metrics(
     log_file = open(path_to_log, "w")
 
     batch_size = evaluation_metrics_dictionary["sampled_actions"].shape[1]
-    num_reasoning_steps = evaluation_metrics_dictionary["hunch_llm_final_guesses"].shape[0]
+    num_reasoning_steps = evaluation_metrics_dictionary["kg_extrinsic_rewards"].shape[0]
     reasoning_steps_str = [ f"{i}." for i in range(num_reasoning_steps)]
     log_file.write(f"Batch size: {batch_size}\n")
 
@@ -98,9 +107,8 @@ def dump_evaluation_metrics(
             kge_extrinsic_rewards = evaluation_metrics_dictionary["kg_extrinsic_rewards"][:, element_id].squeeze(1)
             kge_intrinsic_rewards = evaluation_metrics_dictionary["kg_intrinsic_reward"][:, element_id].squeeze(1)
             kge_dones = evaluation_metrics_dictionary["kg_dones"][:, element_id].squeeze(1)
-            hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id, :]
+            
             questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
-            answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
             relevant_entities = evaluation_metrics_dictionary["relevant_entities"].iloc[element_id]
             relevant_rels = evaluation_metrics_dictionary["relevant_relations"].iloc[element_id]
             answer_id = evaluation_metrics_dictionary["true_answer_id"].iloc[element_id]
@@ -109,17 +117,24 @@ def dump_evaluation_metrics(
             #-------------------------------------
             'LLM'
             # Reconstruct the language output
-            # for every element in the batch, we decode the 3 actions with 4 elements in them
-            predicted_answer = answer_tokenizer.batch_decode(hunch_llm_final_guesses)
-
+            # for every element in the batch, we decode the 3 actions with 4 elements in
             questions_txt = question_tokenizer.decode(questions)
-            answer_txt = answer_tokenizer.decode(answer)
+
             log_file.write(f"#LLM Evaluation Data ------------\n")
             log_file.write(f"Question: {questions_txt}\n")
-            log_file.write(f"Answer: {answer_txt}\n")
-            
-            log_file.write(f"#LLM Predictions ----------------\n")
-            log_file.write(f"HunchLLM Answer: {predicted_answer}\n")
+
+            if llm_answered_enabled:
+                hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id, :]
+                answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
+
+                predicted_answer = answer_tokenizer.batch_decode(hunch_llm_final_guesses)
+
+                answer_txt = answer_tokenizer.decode(answer)
+
+                log_file.write(f"Answer: {answer_txt}\n")
+                
+                log_file.write(f"#LLM Predictions ----------------\n")
+                log_file.write(f"HunchLLM Answer: {predicted_answer}\n")
 
             #--------------------------------
             'KGE'
@@ -237,12 +252,13 @@ def dump_evaluation_metrics(
     ########################################
     # Report to SummaryWriter
     ########################################
-    'LLM Rewards'
-    hunch_llm_entropy = evaluation_metrics_dictionary["hunch_llm_entropy"]
-    llm_rewards = evaluation_metrics_dictionary["hunch_llm_rewards"]
+    if llm_answered_enabled:
+        'LLM Rewards'
+        hunch_llm_entropy = evaluation_metrics_dictionary["hunch_llm_entropy"]
+        llm_rewards = evaluation_metrics_dictionary["hunch_llm_rewards"]
 
-    writer.add_scalar('LLM Reward/Entropy', hunch_llm_entropy[-1].item(), iteration) # Only consider the last step
-    writer.add_scalar('LLM Reward/Reward', llm_rewards[-1].mean(), iteration) # Only consider the last step
+        writer.add_scalar('LLM Reward/Entropy', hunch_llm_entropy[-1].item(), iteration) # Only consider the last step
+        writer.add_scalar('LLM Reward/Reward', llm_rewards[-1].mean(), iteration) # Only consider the last step
 
     'KG Rewards'
     kge_extrinsic_rewards = evaluation_metrics_dictionary["kg_extrinsic_rewards"]
@@ -266,7 +282,7 @@ def dump_evaluation_metrics(
     # Report to Wandb
     ########################################
     # TODO: Add KGE navigation agent metrics to wandb
-    if wandb_on:
+    if wandb_on and llm_answered_enabled:
         wandb_df = pd.DataFrame({
             "questions" : wandb_questions,
             "answer_true" : wandb_realAnswer,
