@@ -180,8 +180,8 @@ def rollout(
         # Ah ssampled_actions are the ones that have to go against the knowlde garph.
 
         states = observations.state
-        visited_embeddings = observations.position.clone()
-        position_ids = observations.position_id.clone()
+        visited_embeddings = observations.position.clone() if isinstance(observations.position, torch.Tensor) else torch.tensor(observations.position).clone()
+        position_ids = observations.position_id.clone() if isinstance(observations.position_id, torch.Tensor) else torch.tensor(observations.position_id).clone()
         
         # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
