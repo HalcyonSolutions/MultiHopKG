@@ -14,7 +14,6 @@ from the KGE model.
 # TODO: Improve dump_eval_metrics to support both `mlm_training.py` and `nav_training.py`
 
 import argparse
-import json
 import logging
 import os
 from typing import List, Tuple, Dict, Any, DefaultDict
@@ -23,7 +22,6 @@ import sys
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 import torch
 from torch.utils.tensorboard import SummaryWriter 
@@ -35,34 +33,22 @@ from tqdm import tqdm
 from transformers import (
     AutoModel,
     AutoTokenizer,
-    BartConfig,
-    BertModel,
     PreTrainedTokenizer,
 )
 
 import multihopkg.data_utils as data_utils
 import multihopkg.utils_debug.distribution_tracker as dist_tracker
-from multihopkg.environments import Observation
 from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
-from multihopkg.models_language.classical import HunchBart, collate_token_ids_batch
 from multihopkg.logging import setup_logger
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 from multihopkg.run_configs import alpha
 from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
-from multihopkg.utils.convenience import tensor_normalization
 from multihopkg.utils.setup import set_seeds
 from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
 from multihopkg.logs import torch_module_logging
 from multihopkg.utils.wandb import histogram_all_modules
 from multihopkg.utils_debug.dump_evals import dump_evaluation_metrics
-
-
-# PCA
-from sklearn.decomposition import PCA
-
-import io
-from PIL import Image
 
 traceback.install()
 wandb_run = None
@@ -102,22 +88,18 @@ def rollout(
     
     During the rollout:
     - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions.
-    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE).
+    - Rewards are computed from the knowledge graph environment (KGE).
     - Evaluation metrics are optionally collected in development mode (`dev_mode`).
 
-    args:
+    Args:
         steps_in_episode (int): 
             The number of steps to execute in each episode.
         nav_agent (ContinuousPolicyGradient): 
             The policy network responsible for deciding actions based on the current state.
-        hunch_llm (nn.Module): 
-            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
         env (ITLGraphEnvironment): 
             The knowledge graph environment that provides observations, rewards, and state transitions.
         questions_embeddings (torch.Tensor): 
             Pre-embedded representations of the questions to be answered. Shape: (batch_size, embedding_dim).
-        answers_ids (torch.Tensor): 
-            Tokenized IDs of the correct answers. Shape: (batch_size, sequence_length).
         relevant_entities (List[List[int]]): 
             A list of relevant entities for each question, represented as lists of entity IDs.
         relevant_rels (List[List[int]]): 
@@ -126,11 +108,10 @@ def rollout(
             A list of IDs corresponding to the correct answer entities.
         dev_mode (bool, optional): 
             If `True`, additional evaluation metrics are collected for debugging or analysis. Defaults to `False`.
-    returns:
+
+    Returns:
         - log_action_probs (List[torch.Tensor]): 
             A list of log probabilities of the actions taken by the navigation agent at each step.
-        - llm_rewards (List[torch.Tensor]): 
-            A list of rewards computed by the language model for each step.
         - kg_rewards (List[torch.Tensor]): 
             A list of rewards computed by the knowledge graph environment for each step.
         - eval_metrics (Dict[str, Any]): 
@@ -238,7 +219,7 @@ def batch_loop_dev(
 
     During the batch loop:
     - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions inside `rollout`.
-    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE).
+    - Rewards are computed from the knowledge graph environment (KGE).
     - Evaluation metrics are collected for analysis.
 
     This function is found within `evaluate_training` calls upon `rollout`.
@@ -250,19 +231,14 @@ def batch_loop_dev(
             A batch of data containing questions, answers, relevant entities, and relations.
         nav_agent (ContinuousPolicyGradient): 
             The policy network responsible for deciding actions based on the current state.
-        hunch_llm (nn.Module): 
-            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
         steps_in_episode (int): 
             The number of steps to execute in each episode.
-        pad_token_id (int): 
-            The token ID used for padding sequences in the answer IDs.
 
     Returns:
         - `pg_loss` (torch.Tensor): 
             The policy gradient loss computed for the batch.
         - `eval_extras` (Dict[str, Any]): 
             A dictionary containing additional evaluation metrics collected during the batch loop.
-
 
     Notes:
         - This function is specifically designed for development and debugging purposes.
@@ -343,16 +319,16 @@ def batch_loop(
     steps_in_episode: int,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
-    Executes a batch loop for training the navigation agent and language model.
+    Executes a batch loop for training the navigation agent.
     This function performs reinforcement learning (RL) rollouts for a batch of data
     and computes the policy gradient loss for training.
 
     During the batch loop:
     - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions inside `rollout`.
-    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE).
+    - Rewards are computed from the knowledge graph environment (KGE).
     - The policy gradient loss is calculated based on the rewards and log probabilities of actions.
 
-    This function is found within `train_multihokg` and calls upon `rollout`.
+    This function is found within `train_nav_multihopkg` and calls upon `rollout`.
 
     Args:
         env (ITLGraphEnvironment): 
@@ -361,16 +337,8 @@ def batch_loop(
             A batch of data containing questions, answers, relevant entities, and relations.
         nav_agent (ContinuousPolicyGradient): 
             The policy network responsible for deciding actions based on the current state.
-        hunch_llm (nn.Module): 
-            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
         steps_in_episode (int): 
             The number of steps to execute in each episode.
-        bos_token_id (int): 
-            The token ID representing the beginning of a sequence in the answer IDs.
-        eos_token_id (int): 
-            The token ID representing the end of a sequence in the answer IDs.
-        pad_token_id (int): 
-            The token ID used for padding sequences in the answer IDs.
 
     Returns:
         - `pg_loss` (torch.Tensor): 
@@ -459,11 +427,11 @@ def evaluate_training(
     answer_id: List[int] = None,
 ):
     """
-    Evaluates the performance of the navigation agent and language model on the development set.
+    Evaluates the performance of the navigation agent on the development set.
     This function computes evaluation metrics, logs results, and optionally visualizes the evaluation process.
 
     This function is found within `train_multihopkg` and is called periodically during training. 
-    This function calls upon `batch_loop_dev` and `dump_evaluation_metrics`.
+    It calls upon `batch_loop_dev` and `dump_evaluation_metrics`.
 
     Args:
         env (ITLGraphEnvironment): 
@@ -472,8 +440,6 @@ def evaluate_training(
             The development dataset containing questions, answers, relevant entities, and relations.
         nav_agent (ContinuousPolicyGradient): 
             The policy network responsible for deciding actions based on the current state.
-        hunch_llm (nn.Module): 
-            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
         steps_in_episode (int): 
             The number of steps to execute in each episode.
         batch_size_dev (int): 
@@ -488,8 +454,6 @@ def evaluate_training(
             A TensorBoard writer for logging metrics and visualizations.
         question_tokenizer (PreTrainedTokenizer): 
             The tokenizer used for processing questions.
-        answer_tokenizer (PreTrainedTokenizer): 
-            The tokenizer used for processing answers.
         wandb_on (bool): 
             If `True`, logs metrics to Weights & Biases (wandb).
         iteration (int): 
@@ -568,7 +532,7 @@ def evaluate_training(
         if verbose and logger:
 
             # eval_extras has variables that we need
-            just_dump_it_here = "./logs/evaluation_dumps.log"
+            just_dump_it_here = "./logs/nav_evaluation_dumps.log"
 
             answer_kge_tensor = get_embeddings_from_indices(
                 env.knowledge_graph.entity_embedding,
@@ -596,6 +560,7 @@ def evaluate_training(
                 writer=writer,						  
                 wandb_on=wandb_on,
                 logger=logger,
+                llm_answered_enabled=False
             )
             logger.warning(f"We just left dump_evaluation_metrics")
 
@@ -627,12 +592,12 @@ def train_nav_multihopkg(
     wandb_on: bool,
 ):
     """
-    Trains the navigation agent and language model using reinforcement learning (RL) on a knowledge graph environment.
+    Trains the navigation agent using reinforcement learning (RL) on a knowledge graph environment.
     This function performs training over multiple epochs and evaluates the model periodically on a development set.
 
     During training:
     - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions in `rollout`.
-    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE) in `batch_loop`.
+    - Rewards are computed from the knowledge graph environment (KGE) in `batch_loop`.
     - The policy gradient loss is calculated and used to update the model parameters.
     - Evaluation is performed periodically using the `evaluate_training` function.
 
@@ -648,8 +613,6 @@ def train_nav_multihopkg(
             The total number of epochs to train the model.
         nav_agent (ContinuousPolicyGradient): 
             The policy network responsible for deciding actions based on the current state.
-        hunch_llm (nn.Module): 
-            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
         learning_rate (float): 
             The learning rate for the optimizer.
         steps_in_episode (int): 
@@ -670,8 +633,6 @@ def train_nav_multihopkg(
             If `True`, visualizations of gradients and weights histograms are tracked along with navigation movements.
         question_tokenizer (PreTrainedTokenizer): 
             The tokenizer used for processing questions.
-        answer_tokenizer (PreTrainedTokenizer): 
-            The tokenizer used for processing answers. Note: Not the same as the question tokenizer.
         track_gradients (bool): 
             If `True`, tracks and logs gradient information for debugging.
         num_batches_till_eval (int): 
@@ -683,7 +644,7 @@ def train_nav_multihopkg(
         None
 
     Notes:
-        - The function uses reinforcement learning to train the navigation agent and language model.
+        - The function uses reinforcement learning to train the navigation agent.
         - Periodic evaluation is performed using the `evaluate_training` function.
         - Metrics and visualizations are logged to TensorBoard and optionally to wandb.
         - The function ensures that the environment and models are in training mode during the process.
