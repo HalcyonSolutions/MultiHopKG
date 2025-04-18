@@ -9,49 +9,74 @@ Optionally, it may also incorporate Question Textual Embedding with BERT alongsi
 from the KGE model.
 """
 # TODO: Make the question embeddings optional
-# TODO: Update Summaries according to this new code (without LLM)
-# TODO: Cleanup packages imports
 # TODO: Improve dump_eval_metrics to support both `mlm_training.py` and `nav_training.py`
 
+#-------------------------------------------------------------------------------
+############################# Start of Imports #################################
+#-------------------------------------------------------------------------------
+
+# Standard Library Imports
 import argparse
-import logging
 import os
-from typing import List, Tuple, Dict, Any, DefaultDict
-import debugpy
 import sys
 
+# Debugging and Development Tools
+import debugpy
+import logging
+import wandb
+from rich import traceback
+
+# Data Manipulation and Analysis
 import numpy as np
 import pandas as pd
 
-import torch
-from torch.utils.tensorboard import SummaryWriter 
-
-import wandb
-from rich import traceback
-from torch import nn
 from tqdm import tqdm
+
+import torch
+from torch import nn
+from torch.utils.tensorboard import SummaryWriter 
 from transformers import (
     AutoModel,
     AutoTokenizer,
     PreTrainedTokenizer,
 )
 
+# Typing
+from typing import List, Tuple, Dict, Any, DefaultDict
+
+# Personal Package Imports (multihopkg)
+# Utilities
 import multihopkg.data_utils as data_utils
 import multihopkg.utils_debug.distribution_tracker as dist_tracker
-from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
-from multihopkg.logging import setup_logger
-from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
-from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
-from multihopkg.run_configs import alpha
-from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
 from multihopkg.utils.setup import set_seeds
-from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
-from multihopkg.logs import torch_module_logging
 from multihopkg.utils.wandb import histogram_all_modules
 from multihopkg.utils_debug.dump_evals import dump_evaluation_metrics
 
+# Logging
+from multihopkg.logging import setup_logger
+from multihopkg.logs import torch_module_logging
+
+# Reinforcement Learning
+from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
+from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
+
+# Knowledge Graph Embeddings
+from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
+
+# Vector Search
+from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
+
+# Configuration
+from multihopkg.run_configs import alpha
+from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
+
+#-------------------------------------------------------------------------------
+############################## End of Imports ##################################
+#-------------------------------------------------------------------------------
+
 traceback.install()
 wandb_run = None
+
 
 def initial_setup() -> Tuple[argparse.Namespace, PreTrainedTokenizer, PreTrainedTokenizer, logging.Logger]:
     global logger
