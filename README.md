@@ -44,6 +44,9 @@ If you want to **train** you can find a best config in `multihopkg/exogenous/sun
 
 Model will be saved to `models/`
 
-To **evaluate** the model you can use either `tests/conftest.py` or `kge_train.py`. If you choose the 2nd, you should use this command
+To **evaluate** the model:
+- Use `tests/conftest.py` if you want to run unit tests or validate specific components of the model. This script is designed for testing purposes and ensures that individual parts of the system are functioning correctly.
+- Use `kge_train.py` if you want to perform a full evaluation of the trained model. This script is intended for end-to-end testing and generating evaluation metrics.
 
+If you choose to use `kge_train.py`, you can run the following command:
 `CUDA_VISIBLE_DEVICES=[DEVICE NUMBER] python -u kge_train.py --do_test --cuda -init models/[MODEL NAME] --save_path [PATH TO SAVE RESULTS]`
