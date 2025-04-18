@@ -375,7 +375,6 @@ def evaluate_training(
     answer_tokenizer: PreTrainedTokenizer,
     wandb_on: bool,
     iteration: int,
-    answer_id: List[int] = None,
 ):
     """
     Evaluates the performance of the navigation agent and language model on the development set.
@@ -504,6 +503,8 @@ def evaluate_training(
 
             # eval_extras has variables that we need
             just_dump_it_here = "./logs/evaluation_dumps.log"
+
+            answer_id = mini_batch["Answer-Entity"].tolist()
 
             answer_kge_tensor = get_embeddings_from_indices(
                 env.knowledge_graph.entity_embedding,
@@ -738,7 +739,6 @@ def train_multihopkg(
                     answer_tokenizer,
                     wandb_on,
                     iteration = epoch_id * (len(train_data) // batch_size // mbatches_b4_eval) + (batch_count // mbatches_b4_eval),
-                    answer_id=mini_batch["Answer-Entity"].tolist(),  # Extract answer_id from mini_batch
                 )
 
             ########################################
