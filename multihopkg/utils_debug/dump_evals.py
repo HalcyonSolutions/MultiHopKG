@@ -43,7 +43,6 @@ def dump_evaluation_metrics(
     # TODO: Here we are missing dic keys: sampled_actions, position_ids, hunch_llm_final_guesses
     assertions = [
         "sampled_actions" in evaluation_metrics_dictionary,
-        "position_ids" in evaluation_metrics_dictionary,
         "reference_questions" in evaluation_metrics_dictionary,
         "true_answer" in evaluation_metrics_dictionary,
         "relevant_entities" in evaluation_metrics_dictionary,
@@ -214,6 +213,7 @@ def dump_evaluation_metrics(
             position_distance_avg = []
             position_distance_ans = []
             closest_emb_distance = []
+            position_avg = []
             
             for i0 in range(kge_cur_pos.shape[0]):
                 diff = kg_ent_distance_func(kge_cur_pos[i0], kge_prev_pos[i0])
@@ -225,6 +225,8 @@ def dump_evaluation_metrics(
 
                 diff_closest = kg_ent_distance_func(kge_cur_pos[i0], entity_emb[i0])
                 diff_closest = conversion_constant*diff_closest.mean().item()
+                
+                position_avg.append(f"{conversion_constant*kge_cur_pos[i0].mean().item():.2e}")
 
                 position_distance.append(f"{diff_total:.2e}")
                 position_distance_avg.append(f"{diff_avg:.2e}")
@@ -237,6 +239,8 @@ def dump_evaluation_metrics(
             log_file.write(f"Avg. {translation_type} between KGE Positions {unit_type}:\n {position_distance_avg} \n")
             log_file.write(f"Avg. {translation_type} Debt between Current KGE and Answer {unit_type}:\n {position_distance_ans} \n")
             log_file.write(f"Avg. {translation_type} Debt between Current KGE Pos. and Closest Entity {unit_type}:\n {closest_emb_distance} \n")
+            log_file.write(f"Current Position (Mean):\n {position_avg} \n")
+            log_file.write(f"Answer Position (Mean):\n {conversion_constant*ans_emb.mean().item():.2e} \n")
 
             wandb_positions.append(" --> ".join(position_distance))
 
