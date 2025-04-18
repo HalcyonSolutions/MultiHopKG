@@ -16,6 +16,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from multihopkg.exogenous.sun_models import KGEModel
+from multihopkg.utils.data_splitting import read_triple
 
 from multihopkg.datasets import TrainDataset
 from multihopkg.datasets import BidirectionalOneShotIterator
@@ -115,17 +116,6 @@ def save_model(model, optimizer, save_variable_list, args):
         os.path.join(args.save_path, 'relation_embedding'), 
         relation_embedding
     )
-
-def read_triple(file_path, entity2id, relation2id):
-    '''
-    Read triples and map them into ids.
-    '''
-    triples = []
-    with open(file_path) as fin:
-        for line in fin:
-            h, r, t = line.strip().split('\t')
-            triples.append((entity2id[h], relation2id[r], entity2id[t]))
-    return triples
 
 def set_logger(args):
     '''
