@@ -12,6 +12,8 @@ from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
 
 from typing import Dict, Any, Union, Callable
 
+# TODO: Move to a different file once ready
+
 def dump_evaluation_metrics(
     path_to_log: str,
     evaluation_metrics_dictionary: Dict[str, Any],
@@ -32,6 +34,7 @@ def dump_evaluation_metrics(
     wandb_on: bool,
     logger: logging.Logger,
     writer: SummaryWriter,
+    llm_answered_enabled: bool = True,
 ) -> None:
     """
     Will output all of the metrics in a very detailed way for each specific key, ONLY for both the LLM + KG Navigation Agent
@@ -54,20 +57,14 @@ def dump_evaluation_metrics(
         "kg_dones" in evaluation_metrics_dictionary,
         "pg_loss" in evaluation_metrics_dictionary,
     ]
-    if not all(assertions):
-        raise ValueError("Evaluation metrics dictionary is missing some keys")
-
-    llm_answered_enabled = False
-    if isinstance(answer_tokenizer, PreTrainedTokenizer):
-        additional_assertions = [
+    if llm_answered_enabled:
+        assertions.extend([
             "hunch_llm_entropy" in evaluation_metrics_dictionary,
             "hunch_llm_rewards" in evaluation_metrics_dictionary,
             "hunch_llm_final_guesses" in evaluation_metrics_dictionary,
-        ]
-        if not all(additional_assertions):
-            raise ValueError("Evaluation metrics dictionary is missing some keys for LLM")
-        
-        llm_answered_enabled = True
+        ])
+    if not all(assertions):
+        raise ValueError("Evaluation metrics dictionary is missing some keys")
 
     assert not torch.is_grad_enabled(), "Gradient must NOT be enabled, otherwise is creates too much overhead!!"
 
