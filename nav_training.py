@@ -687,7 +687,7 @@ def train_nav_multihopkg(
         for name, param in env.named_parameters():
             if param.requires_grad: print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
 
-    writer = SummaryWriter(log_dir=f'runs')
+    writer = SummaryWriter(log_dir=f'runs/nav/')
 
     named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()))}
     optimizer = torch.optim.Adam(  # type: ignore

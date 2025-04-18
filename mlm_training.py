@@ -531,6 +531,7 @@ def evaluate_training(
                 writer=writer,						  
                 wandb_on=wandb_on,
                 logger=logger,
+                llm_answered_enabled=True
             )
             logger.warning(f"We just left dump_evaluation_metrics")
 
@@ -668,7 +669,7 @@ def train_multihopkg(
         for name, param in env.named_parameters():
             if param.requires_grad: print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
 
-    writer = SummaryWriter(log_dir=f'runs')
+    writer = SummaryWriter(log_dir=f'runs/mlm/')
 
     named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()) + list(hunch_llm.named_parameters()))}
     optimizer = torch.optim.Adam(  # type: ignore
