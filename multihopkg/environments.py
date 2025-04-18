@@ -9,8 +9,6 @@ import torch
 
 @dataclass
 class Observation:
-    position: np.ndarray # Debugging
-    position_id: np.ndarray # Debuggin
     state: torch.Tensor # Part of computation Graph
     kge_cur_pos: torch.Tensor # KG embedding vector of the current position
     kge_prev_pos: torch.Tensor # KG embedding vector of the previous position

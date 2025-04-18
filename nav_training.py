@@ -164,7 +164,7 @@ def rollout(
         relevant_ent = relevant_entities
     )
 
-    cur_position, cur_state = observations.position, observations.state
+    cur_state = observations.state
     # Should be of shape (batch_size, 1, hidden_dim)
 
     # pn.initialize_path(kg) # TOREM: Unecessasry to ask pn to form it for us.
@@ -180,8 +180,6 @@ def rollout(
         # Ah ssampled_actions are the ones that have to go against the knowlde garph.
 
         states = observations.state
-        visited_embeddings = observations.position.clone() if isinstance(observations.position, torch.Tensor) else torch.tensor(observations.position).clone()
-        position_ids = observations.position_id.clone() if isinstance(observations.position_id, torch.Tensor) else torch.tensor(observations.position_id).clone()
         
         # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
@@ -214,8 +212,6 @@ def rollout(
         ########################################
         if dev_mode:
             eval_metrics["sampled_actions"].append(sampled_actions.detach().cpu())
-            eval_metrics["visited_embeddings"].append(visited_embeddings.detach().cpu())
-            eval_metrics["position_ids"].append(position_ids.detach().cpu())
             eval_metrics["kge_cur_pos"].append(observations.kge_cur_pos.detach().cpu())
             eval_metrics["kge_prev_pos"].append(observations.kge_prev_pos.detach().cpu())
             eval_metrics["kge_action"].append(observations.kge_action.detach().cpu())

@@ -672,10 +672,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
         #                     min=self.knowledge_graph.sun_model.entity_embedding.min(),
         #                     max=self.knowledge_graph.sun_model.entity_embedding.max()) 
 
-        matched_entity_embeddings, corresponding_ent_idxs = self.ann_index_manager_ent.search(
-            self.current_position.detach(), topk=1
-        )
-
         ########################################
         # Projections
         ########################################
@@ -700,8 +696,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # Corresponding indices is a list of indices of the matched embeddings (batch_size, topk=1)
         observation = Observation(
-            position=matched_entity_embeddings,
-            position_id=corresponding_ent_idxs,
             state=projected_state,
             kge_cur_pos=self.current_position, #.detach(), # TODO: Check if we need to detach this for reward calculation
             kge_prev_pos=detached_curpos,
@@ -816,10 +810,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # projected_state = projected_concat
 
         observation = Observation(
-            position=self.current_position.detach().cpu().numpy(),
-            position_id=np.zeros((self.current_position.shape[0])),
             state=projected_state,
-            kge_cur_pos=self.current_position, #.detach(),
+            kge_cur_pos=self.current_position,
             kge_prev_pos=torch.zeros_like(self.current_position.detach()),
             kge_action=torch.zeros(self.action_dim),
         )
