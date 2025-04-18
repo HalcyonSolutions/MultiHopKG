@@ -38,3 +38,12 @@ tar -xvf data-release.tgz
 ```sh
 python mlm_training.py
 ```
+
+## Train and Evaluate KGE Model
+If you want to **train** you can find a best config in `multihopkg/exogenous/sun_best_config.sh`, just copy the one you need from there and use it in the command line.
+
+Model will be saved to `models/`
+
+To **evaluate** the model you can use either `kge_evaluation.py` or `kge_train.py`. If you choose the 2nd, you should use this command
+
+`CUDA_VISIBLE_DEVICES=[DEVICE NUMBER] python -u kge_train.py --do_test --cuda -init models/[MODEL NAME] --save_path [PATH TO SAVE RESULTS]`

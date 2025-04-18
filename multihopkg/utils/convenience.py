@@ -1,4 +1,4 @@
-from typing import Type, TypeVar, Any
+from typing import Type, TypeVar, Any, Union
 import torch
 from torch import nn
 
@@ -34,7 +34,7 @@ def tensor_normalization(tensor: torch.Tensor) -> torch.Tensor:
     std = tensor.std()
     return (tensor - mean) / std
 
-def sample_random_entity(embeddings: nn.Embedding | nn.Parameter):
+def sample_random_entity(embeddings: Union[nn.Embedding, nn.Parameter]):  # Use Union instead of |, for python < 3.10
     if isinstance(embeddings, nn.Parameter):
         num_entities = embeddings.data.shape[0]
         idx = torch.randint(0, num_entities, (1,))
