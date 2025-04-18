@@ -82,7 +82,10 @@ class KGEModel(nn.Module):
         if model_name == 'ComplEx' and (not double_entity_embedding or not double_relation_embedding):
             raise ValueError('ComplEx should use --double_entity_embedding and --double_relation_embedding')
         
-        self.centroid = calculate_entity_centroid(self.entity_embedding)
+        # self.centroid = calculate_entity_centroid(self.entity_embedding)
+        self.centroid = None
+        self.embedding_range_max = None
+        self.embedding_range_min = None
 
         # Initialize the model forward function dictionary once
         self.model_func = {
@@ -194,7 +197,10 @@ class KGEModel(nn.Module):
         # Load pretrained embeddings
         model.load_embeddings(entity_embedding, relation_embedding)
         model.load_state_dict(state_dict)
-        
+
+        # Only makes sense in Euclidean space
+        model.centroid = calculate_entity_centroid(model.entity_embedding)
+        model.embedding_range_min, model.embedding_range_max = calculate_entity_range(model.entity_embedding)
         return model
 
     #-----------------------------------------------------------------------
@@ -637,7 +643,7 @@ class KGEModel(nn.Module):
         """
         
         #Make phases of entities and relations uniformly distributed in [-pi, pi]
-        phase_relation = self.denormalize_embedding(relation)
+        phase_relation = normalize_angle_smooth(self.denormalize_embedding(relation))
 
         phase_translation = phase_head + phase_relation
 
@@ -653,6 +659,10 @@ class KGEModel(nn.Module):
         """
 
         tail = self.TransE_Eval(cur_states, cur_actions)
+
+        # TODO: Improve upon this, this is a temporatory solution
+        # Extract the max and min and use them instead
+        tail = torch.clamp(tail, self.embedding_range_min, self.embedding_range_max)
 
         return tail
 
@@ -704,6 +714,7 @@ class KGEModel(nn.Module):
     def absolute_difference_phase(self, head: torch.Tensor, tail: torch.Tensor) -> torch.Tensor:
         """
         Calculate the absolute difference between two vectors in phase space.
+        Does not denormalize the result (stays in radians).
         
         args:
             head: torch.Tensor. Head embedding (in radians)
@@ -722,6 +733,7 @@ class KGEModel(nn.Module):
         Calculate the absolute difference between two vectors.
         Works for both Euclidean and Rotational space.
         Compatible with gradient calculation and none gradient calculation.
+        Does not denormalize the result.
         
         args:
             head: torch.Tensor. Head embedding
@@ -870,6 +882,15 @@ def calculate_entity_centroid(embeddings: Union[nn.Embedding, nn.Parameter]):
     elif isinstance(embeddings, nn.Embedding):
         entity_centroid = torch.mean(embeddings.weight.data, dim=0)
     return entity_centroid
+
+def calculate_entity_range(embeddings: Union[nn.Embedding, nn.Parameter]):
+    if isinstance(embeddings, nn.Parameter):
+        max_range = torch.max(embeddings.data).item()
+        min_range = torch.min(embeddings.data).item()
+    elif isinstance(embeddings, nn.Embedding):
+        max_range = torch.max(embeddings.weight.data).item()
+        min_range = torch.min(embeddings.weight.data).item()
+    return min_range, max_range
 
 class LegacyKGEModel(nn.Module):
     def __init__(
