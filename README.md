@@ -40,9 +40,9 @@ python mlm_training.py
 ```
 
 ## Train and Evaluate KGE Model
-If you want to **train** you can find a best config in `multihopkg/exogenous/sun_best_config.sh`, just copy the one you need from there and use it in the command line.
+If you want to **train** you can find a best config in `configs/sun_best_config.sh`, just copy the one you need from there and use it in the command line.
 
-**Autoencoder** feature can be enabled, see `multihopkg/exogenous/sun_best_config.sh`. Fully tested only on **pRotatE FB15k**.
+**Autoencoder** feature can be enabled, see `configs/sun_best_config.sh`. Fully tested only on **pRotatE FB15k**.
 Doesn't work if `-dr` or `--double_relation_embedding` is `True`.
 
 Model will be saved to `models/`
