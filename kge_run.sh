@@ -33,7 +33,13 @@ else
     AUTOENCODER_FLAG=""
 fi
 
+# SAVE is modified, and different from original code
+# SAVE_ID is now useless
 SAVE=$SAVE_PATH/"$MODEL"_"$DATASET"_dim"$HIDDEN_DIM"
+# if Autoencoder is used, add it to the SAVE name
+if [ "$AUTOENCODER_STATUS" = "true" ] || [ "$AUTOENCODER_STATUS" = "1" ]; then
+    SAVE=$SAVE"_autoencoder"
+fi
 
 if [ $MODE == "train" ]
 then
