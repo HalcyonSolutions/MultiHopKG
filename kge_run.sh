@@ -38,13 +38,17 @@ fi
 # SAVE_ID is now useless
 SAVE=$SAVE_PATH/"$MODEL"_"$DATASET"_dim"$HIDDEN_DIM"
 # if Autoencoder is used, add it to the SAVE name
+AUTOENCODER_ARGS=""
 if [ "$AUTOENCODER_STATUS" = "true" ] || [ "$AUTOENCODER_STATUS" = "1" ]; then
-    SAVE=$SAVE"_autoencoder"
+    AUTOENCODER_FLAG="--autoencoder_flag"
+    AUTOENCODER_ARGS="--autoencoder_lambda $AUTOENCODER_LAMBDA --autoencoder_hidden_dim $AUTOENCODER_HIDDEN_DIM"
+    SAVE=$SAVE_PATH/"$MODEL"_"$DATASET"_dim"$HIDDEN_DIM"_autoencoder"$AUTOENCODER_HIDDEN_DIM"
+else
+    AUTOENCODER_FLAG=""
 fi
 
 if [ $MODE == "train" ]
 then
-
 echo "Start Training......"
 
 CUDA_VISIBLE_DEVICES=$GPU_DEVICE python -u kge_train.py --do_train \
@@ -57,9 +61,7 @@ CUDA_VISIBLE_DEVICES=$GPU_DEVICE python -u kge_train.py --do_train \
     -g $GAMMA -a $ALPHA -adv \
     -lr $LEARNING_RATE --max_steps $MAX_STEPS \
     -save $SAVE --test_batch_size $TEST_BATCH_SIZE \
-    $AUTOENCODER_FLAG \
-    --autoencoder_lambda $AUTOENCODER_LAMBDA \
-    --autoencoder_hidden_dim $AUTOENCODER_HIDDEN_DIM \
+    $AUTOENCODER_FLAG $AUTOENCODER_ARGS \
     ${17} ${18} ${19} ${20} ${21} ${22} ${23} ${24} ${25}
 
 elif [ $MODE == "valid" ]
@@ -67,14 +69,14 @@ then
 
 echo "Start Evaluation on Valid Data Set......"
 
-CUDA_VISIBLE_DEVICES=$GPU_DEVICE python -u $CODE_PATH/run.py --do_valid --cuda -init $SAVE --save_path fb15k_237
+CUDA_VISIBLE_DEVICES=$GPU_DEVICE python -u kge_train.py --do_valid --cuda -init $SAVE --save_path fb15k_237
    
 elif [ $MODE == "test" ]
 then
 
 echo "Start Evaluation on Test Data Set......"
 
-CUDA_VISIBLE_DEVICES=$GPU_DEVICE python -u $CODE_PATH/run.py --do_test --cuda -init $SAVE  --save_path fb15k_237
+CUDA_VISIBLE_DEVICES=$GPU_DEVICE python -u kge_train.py --do_test --cuda -init $SAVE  --save_path fb15k_237
 
 else
    echo "Unknown MODE" $MODE
