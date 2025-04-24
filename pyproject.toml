@@ -1,33 +1,32 @@
-[tool.poetry]
+[project]
 name = "multihopkg"
 version = "0.1.0"
-description = ""
-authors = ["Your Name <you@example.com>"]
+description = "MultiHopKG attempts to create a navigator on graph embeddings for more explainability on language models."
 readme = "README.md"
-package-mode= false
+requires-python = "^3.9"
+license = "LicenseRef-AcademicOnly"
+package-mode = false
 
 [tool.poetry.dependencies]
-python = "^3.10"
-matplotlib = "^3.9.2"
-tqdm = "^4.66.5"
-transformers = "^4.44.2"
+python = "^3.9"
+networkx = "^3.2.1"
+matplotlib = "^3.9.4"
+tqdm = "^4.67.1"
+transformers = "^4.51.3"
 pandas = "^2.2.3"
 torch = {version = "^2.4.1+cu121", source = "pytorch_gpu"}
-scikit-learn = "^1.5.2"
-pyarrow = "^18.0.0"
-faiss-cpu = "1.9.0"
-wandb = "^0.18.6"
+scikit-learn = "^1.6.1"
+pyarrow = "^19.0.1"
+faiss-cpu = "^1.10.0"
+wandb = "^0.19.10"
 dataloader = "^2.0"
-networkx = "^3.4.2"
-tensorboard = "^2.18.0"
-pygraphviz = "^1.14"
+tensorboard = "^2.19.0"
+pygraphviz = "^1.11"
 
 
-[[tool.poetry.source]]
-name = "pytorch_gpu"
-url = "https://download.pytorch.org/whl/cu121"
-priority = "explicit"
-
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
 rich = "^13.9.3"
@@ -35,6 +34,7 @@ debugpy = "^1.8.9"
 pytest = "^8.3.5"
 pytest-sugar = "^1.0.0"
 
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+[[tool.poetry.source]]
+name = "pytorch_gpu"
+url = "https://download.pytorch.org/whl/cu121"
+priority = "explicit"
