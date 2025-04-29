@@ -28,9 +28,10 @@ def main():
     print(f"Test Batch Size: {config.test_batch_size}")
     print(f"WandB Project: {config.wandb_project}")
     print(f"Track: {config.track}")
-    print(f"Autoencoder Flag: {config.autoencoder_flag}")
-    print(f"Autoencoder Hidden Dim: {config.autoencoder_hidden_dim}")
-    print(f"Autoencoder Lambda: {config.autoencoder_lambda}")
+    if 'autoencoder_flag' in config:
+        print(f"Autoencoder Flag: {config.autoencoder_flag}")
+        print(f"Autoencoder Hidden Dim: {config.autoencoder_hidden_dim}")
+        print(f"Autoencoder Lambda: {config.autoencoder_lambda}")
     print(f"Saving Metric: {config.saving_metric}")
     print(f"Saving Threshold: {config.saving_threshold}")
     print(f"Additional Params: {config.additional_params}")
@@ -65,7 +66,7 @@ def main():
         if str(config.track).lower() == "true":
             cmd += ["-track", "--wandb_project", config.wandb_project]
         
-        if str(config.autoencoder_flag).lower() == "true":
+        if 'autoencoder_flag' in config:
             cmd += ["--autoencoder_flag", "--autoencoder_hidden_dim", str(config.autoencoder_hidden_dim), "--autoencoder_lambda", str(config.autoencoder_lambda)]
 
     else:
