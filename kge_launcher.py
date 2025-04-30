@@ -5,6 +5,7 @@ Supports training via Wandb parameter sweep. (Doesn't work with bash for some re
 import wandb
 import subprocess
 import os
+import time
 
 def main():
     wandb.init()
@@ -38,6 +39,9 @@ def main():
     print("==========================================")
 
     if config.mode == "train":
+        local_time = time.localtime()
+        timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+
         cmd = [
             "python", "kge_train.py",
             "--do_train",
@@ -54,10 +58,12 @@ def main():
             "-adv",
             "-lr", str(config.learning_rate),
             "--max_steps", str(config.max_steps),
-            "-save", f"models/{config.model}_{config.dataset}_dim{config.hidden_dim}",
+            "-save", f"models/{config.model}_{config.dataset}_dim{config.hidden_dim}_{timestamp}",
             "--test_batch_size", str(config.test_batch_size),
             "--saving_metric", config.saving_metric,
             "--saving_threshold", str(config.saving_threshold),
+            "--random_seed", str(config.seed),
+            "--timestamp", timestamp,
         ]
 
         if config.additional_params:

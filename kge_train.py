@@ -81,6 +81,9 @@ def parse_args(args=None):
     parser.add_argument('--saving_metric', default='', type=str, help='Metric used for the threshold required for saving model. If empty, no conditioning for saving model.')
     parser.add_argument('--saving_threshold', default=0.0, type=float, help='threshold required for saving model')
 
+    parser.add_argument("--random_seed", type=int, default=None, help="Random seed for the environment. If None, not used.")
+    parser.add_argument("--timestamp", type=str, default=None, help="Timestamp for the run. If None, current time is used.")
+
     return parser.parse_args(args)
 
 def override_config(args):
@@ -99,7 +102,15 @@ def override_config(args):
     args.double_relation_embedding = argparse_dict['double_relation_embedding']
     args.hidden_dim = argparse_dict['hidden_dim']
     args.test_batch_size = argparse_dict['test_batch_size']
-    
+
+def set_seed(seed):
+    """Set the random seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 def save_model(model, optimizer, save_variable_list, args):
     '''
     Save the parameters of the model and the optimizer,
@@ -177,15 +188,21 @@ def log_metrics(mode, step, metrics):
         
 def main(args):
     # Initialize wandb
+
+    if args.random_seed is not None:
+        set_seed(args.random_seed)
+
+    if args.timestamp is None:
+        local_time = time.localtime()
+        args.timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+
     if args.track:
         if args.wandb_project == '':
             raise ValueError('wandb_project must be specified if tracking is enabled.')
-        local_time = time.localtime()
-        timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
         wandb.init(
             project=f"{args.wandb_project}",
             config=vars(args),
-            name=f"{args.model}-{args.data_path.split('/')[1]}-{timestamp}"
+            name=f"{args.model}-{args.data_path.split('/')[1]}-{args.timestamp}"
         )
         args = argparse.Namespace(**wandb.config)  # <-- Make sure args is overwritten
 
