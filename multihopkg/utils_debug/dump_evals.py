@@ -174,7 +174,7 @@ def dump_evaluation_metrics(
             'KGE Navigation Agent Tokens'
 
             log_file.write(f"#NAV Agent Inference ------------\n")
-            relations_tokens = [id2relations[int(index)] for index in relation_indices.squeeze()]
+            relations_tokens = [id2relations[int(index)] for index in relation_indices.squeeze(1)]
             log_file.write(f"Closest Relations Tokens: \n{relations_tokens}\n")
 
             if relation2title: 
