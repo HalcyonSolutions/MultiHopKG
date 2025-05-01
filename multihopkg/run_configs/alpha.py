@@ -6,113 +6,93 @@ Just to try to get the first run running.
 """
 
 import argparse
-import os
-import sys
-import yaml
 
 def get_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
 
-    # For data processing
-    path_to_running_file = os.path.abspath(sys.argv[0])
-    default_cache_dir = os.path.join(os.path.dirname(path_to_running_file), ".cache")
-
-    ap.add_argument("--gpu", type=int, default=0)
+    'General Training Settings'
+    ap.add_argument('--device', type=str, default="cuda:0", help="The device to run on (default: cuda:0)")
     ap.add_argument("--seed", type=int, default=420, metavar="S")
-    ap.add_argument("--question_tokenizer_name", type=str, default="bert-base-uncased")
-    ap.add_argument("--answer_tokenizer_name", type=str, default="facebook/bart-base")
-    ap.add_argument("--debug", "-d", action="store_true", help="Debug mode")
-    ap.add_argument('--data_dir', type=str, default="./data/FB15k",
-                    help='directory where the knowledge graph data is stored (default: None)')
-    ap.add_argument('--model', type=str, default='pRotatE',
-                    help='knowledge graph embedding model (default: pRotatE)')
+    ap.add_argument("--debug", "-d", action="store_true", help="Debug mode") # TODO: Check if this is still needed.
+    ap.add_argument('--verbose','-v',action="store_true", help="Verbose on the results of evaluation.")
+    ap.add_argument('--visualize','-vv',action="store_true", help="Verbose on the results of evaluation for 2D/3D Visualization.")
+    ap.add_argument('--track_gradients', '-g', action='store_true', help='track gradients')
+    ap.add_argument('--preferred_config', type=str, default="configs/my_config.yaml", help="The path to the configuration file (default: configs/sun.json)")
 
-    ap.add_argument('--gamma', type=float, default=12,
-                    help='The gamma parameter for the graph embedding model')
+    'Learning Hyperparameters'
+    ap.add_argument('--learning_rate', type=float, default=0.00001, help='learning rate (default: 0.0001)')
+    ap.add_argument('--beta', type=float, default=0.0, help='entropy regularization weight (default: 0.0)')
+    ap.add_argument('--gamma', type=float, default=12, help='The gamma parameter for the graph embedding model')
+    ap.add_argument('--rl_gamma', type=float, default=0.9, help='gamma for the RL algorithm')
+    ap.add_argument('--baseline', type=str, default='n/a', help='baseline used by the policy gradient algorithm (default: n/a)')
 
-    ap.add_argument('--history_dim', type=int, default=768, metavar='H',
-                        help='action history encoding LSTM hidden states dimension (default: 400)')
-    ap.add_argument('--history_num_layers', type=int, default=3, metavar='L',
-                        help='action history encoding LSTM number of layers (default: 1)')
-    ap.add_argument('--ff_dropout_rate', type=float, default=0.1,
-                        help='Feed-forward layer dropout rate (default: 0.1)')
-    ap.add_argument('--epochs',type=int,default=200,help='Epochs for training')
-    # # TODO: tinker with this value
-    ap.add_argument('--rnn_hidden',type=int,default=400,help='RNN hidden dimension')
+    'Dropout Scheduling'
+    ap.add_argument('--action_dropout_rate', type=float, default=0.1, help='Dropout rate for randomly masking out knowledge graph edges (default: 0.1)')
+    ap.add_argument('--action_dropout_anneal_factor', type=float, default=0.95, help='Decrease the action dropout rate once the dev set results stopped increase (default: 0.95)')
+    ap.add_argument('--action_dropout_anneal_interval', type=int, default=1000, help='Number of epochs to wait before decreasing the action dropout rate (default: 1000. Action '
+                         'dropout annealing is not used when the value is >= 1000.)')
+    
+    'Training Duration & Rollout'
+    ap.add_argument('--epochs',type=int,default=200, help='Epochs for training')
+    ap.add_argument('--start_epoch', type=int, default=0, help='epoch from which the training should start (default: 0)')
+    ap.add_argument('--num_rollout_steps', type=int, default=8, help='maximum path length (default: 3)')
 
-    # Questions and Answers
+    'Batch Settings'
+    ap.add_argument('--batch_size', type=int, default=256, help='mini-batch size (default: 256)')
+    ap.add_argument('--batch_size_dev', type=int, default=64, help='mini-batch size during inferece (default: 64)')
+    ap.add_argument('--batches_b4_eval', type=int, default=1, help='Number of batches to run before evaluation (default: 100)')
+    ap.add_argument('--num_batches_till_eval', type=int, default=15, help='Number of batches to run before running evaluation')
+
+    'Datasets & File Paths'
+    # QA Dataset
     ap.add_argument('--raw_QAData_path', type=str, default="./data/FB15k/freebaseqa_clean.csv", help="Directory where the QA knowledge graph data is stored (default: None)")
     ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/freebaseqa_clean.json", help="Path for precomputed QA knowledge graph data. Precomputing is mostly tokenizaiton.")
     ap.add_argument('--force_data_prepro', '-f', action="store_true", help="Force the data prepro to run even if the data is already cached.")
     
-    ap.add_argument('--nav_start_emb_type', type=str, default="centroid", help="The starting position of the navigator in the graph. Can be 'centroid', 'random', or 'relevant' (default: centroid)")
-    ap.add_argument('--nav_epsilon_error', type=float, default=50.0, help="Permisable epsilon error for the navigator arriving at the answer. (default: 50.0)")
-    ap.add_argument('--nav_epsilon_metric', type=str, default="l2", help="The metric to use for the navigator. Can be 'l2', 'l1', or 'deg', the last of which is only supported by pRotatE (default: l2)")
-
-    # Entity and Relationship Human Readability
+    # KG Dataset
+    ap.add_argument('--data_dir', type=str, default="./data/FB15k", help='directory where the knowledge graph data is stored (default: None)')
     ap.add_argument('--node_data_path', type=str, default='./data/FB15k/node_data.csv', help='Path to the CSV file containing the name mapping for the entity.')
     ap.add_argument('--node_data_key', type=str, default='MID', help='Special key type used for the entity. i.e., MID for FB15k or RDF for Qid for Fb-Wiki.')
     ap.add_argument('--relationship_data_path', type=str, default='./data/FB15k/relation_data.csv', help='Path to the CSV file containing the name mapping for the relationship.')
     ap.add_argument('--relationship_data_key', type=str, default='Relation', help='Special key type used for the relationship. i.e., None for FB15k or Property for Fb-Wiki.')
+
+    'Knowledge Graph Embedding Model'
+    ap.add_argument('--model', type=str, default='pRotatE', help='knowledge graph embedding model (default: pRotatE)')
+    ap.add_argument('--trained_model_path', type=str, default="./models/protatE_FB15k/")
     
+    'Navigation Agent Settings'
+    ap.add_argument('--nav_start_emb_type', type=str, default="centroid", help="The starting position of the navigator in the graph. Can be 'centroid', 'random', or 'relevant' (default: centroid)")
+    ap.add_argument('--nav_epsilon_error', type=float, default=50.0, help="Permisable epsilon error for the navigator arriving at the answer. (default: 50.0)")
+    ap.add_argument('--nav_epsilon_metric', type=str, default="l2", help="The metric to use for the navigator. Can be 'l2', 'l1', or 'deg', the last of which is only supported by pRotatE (default: l2)")
+    
+    # RNN Settings
+    ap.add_argument('--history_dim', type=int, default=768, metavar='H', help='action history encoding LSTM hidden states dimension (default: 400)')
+    ap.add_argument('--history_num_layers', type=int, default=3, metavar='L', help='action history encoding LSTM number of layers (default: 1)')
+    ap.add_argument('--ff_dropout_rate', type=float, default=0.1, help='Feed-forward layer dropout rate (default: 0.1)')
+    ap.add_argument('--rnn_hidden',type=int,default=400,help='RNN hidden dimension')
+
+    'Textual Embedding (LLMs)'
 	# TODO: (eventually) We might want to add option of locally trained models.
+    # TODO: Replace the redundant models here (question_tokenizer_name vs question_embedding_model) and (answer_tokenizer_name vs pretrained_llm_for_hunch)
+    
+    # These are based on Halcyon/FoundationalLanguageModel
+    
+    # Question Embedding
+    ap.add_argument("--question_tokenizer_name", type=str, default="bert-base-uncased")
     ap.add_argument('--question_embedding_model', type=str, default="bert-base-uncased", help="The Question embedding model to use (default: bert-base-uncased)")
     ap.add_argument('--question_embedding_module_trainable', type=bool, default=True, help="Whether the question embedding model is trainable or not (default: True)")
+    ap.add_argument("--llm_model_dim", default=768)
+
+    # Answer Embedding
+    ap.add_argument("--answer_tokenizer_name", type=str, default="facebook/bart-base")
     ap.add_argument('--further_train_hunchs_llm',  action="store_true", help="Whether to further pretrain the language model or not (default: False)")
     ap.add_argument('--pretrained_llm_for_hunch', type=str, default="facebook/bart-base", help="The pretrained language model to use (default: bert-base-uncased)")
 
-    # Some Verbose stuff
-    ap.add_argument('--verbose','-v',action="store_true", help="Verbose on the results of evaluation.")
-    ap.add_argument('--visualize','-vv',action="store_true", help="Verbose on the results of evaluation for 2D/3D Visualization.")
-    ap.add_argument('--track_gradients', '-g', action='store_true', help='track gradients')
-
-    # Wand DB Modell
+    'Logging and Experiment Tracking'
     ap.add_argument("-w", "--wandb", action="store_true")
     ap.add_argument("--wandb_project_name", help="wandb: Project name label", type=str)
     ap.add_argument("--wr_name", help="wandb: Run Namel label", type=str)
     ap.add_argument("--wr_notes", help="wand:  Run Notes", type=str)
-
-    # These are based on Halcyon/FoundationalLanguageModel
-    # TODO: We should have checkpoitns have this informaiton encoded in them.
-    ap.add_argument("--llm_model_dim", default=768)
-    ap.add_argument('--batches_b4_eval', type=int, default=1, help='Number of batches to run before evaluation (default: 100)')
-
-
-    ap.add_argument('--trained_model_path', type=str, default="./models/protatE_FB15k/")
-
-    ap.add_argument('--start_epoch', type=int, default=0,
-                    help='epoch from which the training should start (default: 0)')
-    ap.add_argument('--batch_size', type=int, default=256,
-                    help='mini-batch size (default: 256)')
-
-    ap.add_argument('--batch_size_dev', type=int, default=64,
-                    help='mini-batch size during inferece (default: 64)')
-    ap.add_argument('--learning_rate', type=float, default=0.00001,
-                    help='learning rate (default: 0.0001)')
-
-    ap.add_argument('--action_dropout_rate', type=float, default=0.1,
-                    help='Dropout rate for randomly masking out knowledge graph edges (default: 0.1)')
-    ap.add_argument('--action_dropout_anneal_factor', type=float, default=0.95,
-	                help='Decrease the action dropout rate once the dev set results stopped increase (default: 0.95)')
-    ap.add_argument('--action_dropout_anneal_interval', type=int, default=1000,
-		            help='Number of epochs to wait before decreasing the action dropout rate (default: 1000. Action '
-                         'dropout annealing is not used when the value is >= 1000.)')
-
-    ap.add_argument('--num_rollout_steps', type=int, default=8,
-                    help='maximum path length (default: 3)')
-    ap.add_argument('--beta', type=float, default=0.0,
-                    help='entropy regularization weight (default: 0.0)')
-
-    ap.add_argument('--baseline', type=str, default='n/a',
-                    help='baseline used by the policy gradient algorithm (default: n/a)')
-    ap.add_argument('--num_batches_till_eval', type=int, default=15,
-                    help='Number of batches to run before running evaluation')
-    ap.add_argument('--rl_gamma', type=float, default=0.9,
-                    help='gamma for the RL algorithm')
-    
-
-    ap.add_argument('--preferred_config', type=str, default="configs/my_config.yaml", help="The path to the configuration file (default: configs/sun.json)")
-    ap.add_argument('--device', type=str, default="cuda:0", help="The device to run on (default: cuda:0)")
 
 
     ######################
@@ -123,6 +103,12 @@ def get_args() -> argparse.Namespace:
     Remove once confident that they are not needed anymore.
     Commented out for now.
     """
+
+    # # For data processing
+    # path_to_running_file = os.path.abspath(sys.argv[0])
+    # default_cache_dir = os.path.join(os.path.dirname(path_to_running_file), ".cache")
+
+    # ap.add_argument("--gpu", type=int, default=0)
 
     # ap.add_argument(
     #     "--QAtriplets_raw_dir",
