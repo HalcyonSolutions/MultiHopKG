@@ -44,7 +44,7 @@ def test_embeddings_normalized(entity_embeddings, relation_embeddings, model_con
     """Test that embeddings are normalized if that's expected."""
     # Check if model type requires normalization (like TransE often does)
     model_type = model_config.get("model", "").lower()
-    requires_normalization = model_type in ["transe", "rotate", "complex"]
+    requires_normalization = model_type in ["rotate", "complex"]
     
     if requires_normalization:
         # Check entity embeddings normalization

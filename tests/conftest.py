@@ -4,6 +4,7 @@ import pytest
 import os
 import numpy as np
 import json
+import torch
 
 from multihopkg.exogenous.sun_models import KGEModel
 from multihopkg.utils.data_splitting import TripleIds, read_triple
@@ -19,13 +20,7 @@ def pytest_addoption(parser):
         default="./models/protatE_FBWikiV4",
         help="Path to embeddings directory to test",
     )
-    parser.addoption(
-        "--threshold",
-        action="store",
-        type=float,
-        default=0.5,
-        help="Minimum performance threshold for embeddings",
-    )
+
     parser.addoption(
         "--dataset_path",
         action="store",
@@ -46,6 +41,8 @@ def pytest_addoption(parser):
     parser.addoption(
         "--thresholds",
         type=ValidatorDict[int | float],
+        # Current approach: change the thresholds manually here.
+        # TODO: Use a path to a json or yaml file with the expected thresholds
         default={
             "MRR": lambda x: x >= 0.37,
             "MR": lambda x: x < 600, #TODO: This one we have to figure out, it should be decently lower
@@ -113,13 +110,6 @@ def relation_embeddings(embeddings_path) -> np.ndarray:
     ), f"Relation embeddings should be a numpy array, got {type(loaded_relations)}"
 
     return loaded_relations
-
-
-@pytest.fixture
-def performance_threshold(request) -> float:
-    """Fixture to get the minimum performance threshold."""
-    return request.config.getoption("--threshold")
-
 
 @pytest.fixture
 def train_triples(
@@ -221,6 +211,7 @@ def knowledge_graph(
     entity_embeddings: np.ndarray,
     relation_embeddings: np.ndarray,
     model_config: dict,
+    embeddings_path: str,
 ) -> KGEModel:
     """Load knowledge graph for testing."""
     try:
@@ -235,12 +226,15 @@ def knowledge_graph(
                 f"Dataset files (train, valid, test) not found for {dataset_path}"
             )
 
+        checkpoint = torch.load(os.path.join(embeddings_path , "checkpoint"))
+
         # Create knowledge graph
         kg = KGEModel.from_pretrained(
             model_name=model_name,
             entity_embedding=entity_embeddings,
             relation_embedding=relation_embeddings,
             gamma=model_config["gamma"],
+            state_dict=checkpoint["model_state_dict"]
         )
         return kg
     except Exception as e:

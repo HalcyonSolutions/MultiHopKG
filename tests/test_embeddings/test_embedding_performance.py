@@ -93,7 +93,7 @@ def test_performance(
 
                 batch_size = positive_sample.size(0)
 
-                score = knowledge_graph((positive_sample, negative_sample), mode)
+                score, _ = knowledge_graph((positive_sample, negative_sample), mode)
                 score += filter_bias
 
                 #Explicitly sort all the entities to ensure that there is no test exposure bias
