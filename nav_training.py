@@ -322,7 +322,7 @@ def batch_loop_dev(
         discounted_rewards[:,t] += gamma * (kg_rewards_t[:,t + 1])
 
     # Sample-wise normalization of the rewards for stability
-    discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
+    # discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
     
     #--------------------------------------------------------------------------
     'Loss Calculation'
@@ -423,7 +423,7 @@ def batch_loop(
         discounted_rewards[:,t] += gamma * (kg_rewards_t[:,t + 1])
 
     # Sample-wise normalization of the rewards for stability
-    discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
+    # discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
 
 
     #--------------------------------------------------------------------------
