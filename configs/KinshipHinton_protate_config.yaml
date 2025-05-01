@@ -1,7 +1,7 @@
 data_dir: "data/KinshipHinton"
 model: "pRotatE"
-trained_model_path: "models/pRotatE_KinshipHinton_dim50"
-nav_epsilon_error: 9.811700820922852
+trained_model_path: "models/pRotatE_KinshipHinton_dim6"
+nav_epsilon_error: 1.62
 nav_epsilon_metric: "l2"
 freebaseqa_path: "data/KinshipHinton/kinship_hinton_qa_1hop"
 raw_QAData_path: "data/KinshipHinton/kinship_hinton_qa_1hop.csv"

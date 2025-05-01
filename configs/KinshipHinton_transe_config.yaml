@@ -1,7 +1,7 @@
 data_dir: "data/KinshipHinton"
 model: "TransE"
-trained_model_path: "models/TransE_KinshipHinton_dim7"
-nav_epsilon_error: 0.72
+trained_model_path: "models/TransE_KinshipHinton_dim12"
+nav_epsilon_error: 1.32
 nav_epsilon_metric: "l2"
 freebaseqa_path: "data/KinshipHinton/kinship_hinton_qa_1hop"
 raw_QAData_path: "data/KinshipHinton/kinship_hinton_qa_1hop.csv"
