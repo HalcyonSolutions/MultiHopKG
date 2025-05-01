@@ -149,7 +149,12 @@ def batch_loop_dev(
     relevant_entities = mini_batch["Relevant-Entities"].tolist()
     relevant_rels = mini_batch["Relevant-Relations"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
-    question_embeddings = env.get_llm_embeddings(questions, device)
+    # question_embeddings = env.get_llm_embeddings(questions, device)
+    if env.use_kge_question_embedding:
+        question_embeddings = env.get_kge_question_embedding(relevant_entities, relevant_rels, device) # Shape: (batch, 2*embedding_dim)
+    else:
+        question_embeddings = env.get_llm_embeddings(questions, device)
+
     answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
@@ -290,7 +295,11 @@ def batch_loop(
     relevant_entities = mini_batch["Relevant-Entities"].tolist()
     relevant_rels = mini_batch["Relevant-Relations"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
-    question_embeddings = env.get_llm_embeddings(questions, device)
+    # question_embeddings = env.get_llm_embeddings(questions, device)
+    if env.use_kge_question_embedding:
+        question_embeddings = env.get_kge_question_embedding(relevant_entities, relevant_rels, device) # Shape: (batch, 2*embedding_dim)
+    else:
+        question_embeddings = env.get_llm_embeddings(questions, device)
     answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
