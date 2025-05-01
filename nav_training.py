@@ -278,7 +278,10 @@ def batch_loop_dev(
     relevant_entities = mini_batch["Relevant-Entities"].tolist()
     relevant_rels = mini_batch["Relevant-Relations"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
-    question_embeddings = env.get_llm_embeddings(questions, device)
+    if env.use_kge_question_embedding:
+        question_embeddings = env.get_kge_question_embedding(relevant_entities, relevant_rels, device) # Shape: (batch, 2*embedding_dim)
+    else:
+        question_embeddings = env.get_llm_embeddings(questions, device)
 
     logger.warning(f"About to go into rollout")
     log_probs, kg_rewards, eval_extras = rollout(
@@ -384,7 +387,10 @@ def batch_loop(
     relevant_entities = mini_batch["Relevant-Entities"].tolist()
     relevant_rels = mini_batch["Relevant-Relations"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
-    question_embeddings = env.get_llm_embeddings(questions, device)
+    if env.use_kge_question_embedding:
+        question_embeddings = env.get_kge_question_embedding(relevant_entities, relevant_rels, device) # Shape: (batch, 2*embedding_dim)
+    else:
+        question_embeddings = env.get_llm_embeddings(questions, device)
 
     log_probs, kg_rewards, eval_extras = rollout(
         steps_in_episode,
@@ -1043,6 +1049,7 @@ def main():
         graph_annotation=None,
         nav_start_emb_type=args.nav_start_emb_type,
         epsilon = args.nav_epsilon_error,
+        use_kge_question_embedding=args.use_kge_question_embedding,
     ).to(args.device)
 
     # Now we load this from the embedding models

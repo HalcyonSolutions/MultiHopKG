@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from multihopkg.exogenous.sun_models import KGEModel
+from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
 import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import var_cuda, zeros_var_cuda
 from multihopkg.vector_search import ANN_IndexMan
@@ -511,6 +511,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         trained_pca,
         graph_pca,
         graph_annotation: str,
+        use_kge_question_embedding: bool = False,
         epsilon: float = 0.1, # For error margin in the distance, TODO: Must find a better value
     ):
         super(ITLGraphEnvironment, self).__init__()
@@ -577,8 +578,13 @@ class ITLGraphEnvironment(Environment, nn.Module):
         ), "The question embedding module must be a torch.nn.Module, otherwis no computation graph. You passed a {}".format(
             type(question_embedding_module)
         )
-        self.question_embedding_module = question_embedding_module
-        self.question_dim = self.question_embedding_module.config.hidden_size
+        self.use_kge_question_embedding = use_kge_question_embedding
+
+        self.question_embedding_module = question_embedding_module # TODO: Consider moving to if condition if unused
+        if self.use_kge_question_embedding: # use the entity and relation embeddings as the question embedding
+            self.question_dim = self.entity_dim + self.relation_dim
+        else:
+            self.question_dim = self.question_embedding_module.config.hidden_size
 
         self.answer_embeddings = None  # This is the embeddings of the answer (batch_size, entity_dim)
         self.answer_found = None       # This is a flag to denote if the answer has been already been found (batch_size, 1)
@@ -595,6 +601,23 @@ class ITLGraphEnvironment(Environment, nn.Module):
                 self.question_dim,
             )
         )
+
+    def get_kge_question_embedding(self, entities: List[np.ndarray], relations: List[np.ndarray], device: torch.device) -> torch.Tensor:
+        # Under the assumption that there is only one relevant entity per question
+        relevant_rels_temp = [rels[0] for rels in relations]
+        rel_tensor = get_embeddings_from_indices(
+            self.knowledge_graph.relation_embedding,
+            torch.tensor(relevant_rels_temp, dtype=torch.int),
+        )
+
+        # Under the assumption that there is only one relevant entity per question
+        relevant_entities_temp = [ents[0] for ents in entities]
+        ent_tensor = get_embeddings_from_indices(
+            self.knowledge_graph.entity_embedding,
+            torch.tensor(relevant_entities_temp, dtype=torch.int),
+        )
+
+        return torch.cat([ent_tensor, rel_tensor], dim=-1).to(device) # Shape: (batch, 2*embedding_dim)
 
     def get_llm_embeddings(self, questions: List[np.ndarray], device: torch.device) -> torch.Tensor:
         """

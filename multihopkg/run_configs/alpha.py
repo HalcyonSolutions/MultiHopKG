@@ -24,15 +24,15 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--learning_rate', type=float, default=0.00001, help='Learning rate for optimizer (default: 1e-5)')
     ap.add_argument('--beta', type=float, default=0.0, help='Entropy regularization coefficient (default: 0.0)') # TODO: Check if this is still used.
     ap.add_argument('--gamma', type=float, default=12, help='Margin or scaling factor used by the knowledge graph embedding model.' \
-                            'Not actually used during flexible translation (default: 12)') # TODO: Force load this value from the state_dict instead
+                            'Not actually used during flexible translation (default: 12)') # TODO: Force load this value from the state_dict instead. 
     ap.add_argument('--rl_gamma', type=float, default=0.9, help='Discount factor for the reinforcement learning agent (default: 0.9)')
-    ap.add_argument('--baseline', type=str, default='n/a', help='Baseline strategy for policy gradient (default: n/a)') # TODO: Check if this is still used.
+    ap.add_argument('--baseline', type=str, default='n/a', help='Baseline strategy for policy gradient (default: n/a)') # TODO: Check if this is still used. Answer: Passed to NavigationAgent, but not used in the current implementation.
 
     'Dropout Scheduling'
-    ap.add_argument('--action_dropout_rate', type=float, default=0.1, help='Dropout rate for randomly masking out knowledge graph edges (default: 0.1)') # TODO: Check if this is still used.
-    ap.add_argument('--action_dropout_anneal_factor', type=float, default=0.95, help='Decrease the action dropout rate once the dev set results stopped increase (default: 0.95)') # TODO: Check if this is still used.
+    ap.add_argument('--action_dropout_rate', type=float, default=0.1, help='Dropout rate for randomly masking out knowledge graph edges (default: 0.1)') # TODO: Check if this is still used. Answer: Passed to NavigationAgent, but not used in the current implementation.
+    ap.add_argument('--action_dropout_anneal_factor', type=float, default=0.95, help='Decrease the action dropout rate once the dev set results stopped increase (default: 0.95)') # TODO: Check if this is still used. Answer: Passed to NavigationAgent, but not used in the current implementation.
     ap.add_argument('--action_dropout_anneal_interval', type=int, default=1000, help='Number of epochs to wait before decreasing the action dropout rate (default: 1000. Action '
-                         'dropout annealing is not used when the value is >= 1000.)') # TODO: Check if this is still used.
+                         'dropout annealing is not used when the value is >= 1000.)') # TODO: Check if this is still used. Answer: Passed to NavigationAgent, but not used in the current implementation.
     
     'Training Duration & Rollout'
     ap.add_argument('--epochs',type=int,default=200, help='Total number of training epochs (default: 200)')
@@ -50,7 +50,8 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--raw_QAData_path', type=str, default="./data/FB15k/freebaseqa_clean.csv", help="Path to the raw QA CSV dataset (default: FreebaseQA)")
     ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/freebaseqa_clean.json", help="Path to cached tokenized QA metadata JSON file")
     ap.add_argument('--force_data_prepro', '-f', action="store_true", help="Force re-processing of QA data, even if cache exists")
-    
+    ap.add_argument('--use_kge_question_embedding', '-kq', action="store_true", help="Use entity and relation embedding as the questions instead of textual question. Only valid for single-hop task. (default: False)")
+
     # KG Dataset
     ap.add_argument('--data_dir', type=str, default="./data/FB15k", help='Root directory for KG triples and metadata (default: ./data/FB15k)')
     ap.add_argument('--node_data_path', type=str, default='./data/FB15k/node_data.csv', help='CSV path containing entity name mappings. Leave Empty if not applicable.')
