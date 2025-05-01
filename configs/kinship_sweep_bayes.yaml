@@ -29,20 +29,17 @@ parameters:
   batch_size:
     distribution: q_log_uniform_values
     q: 1
-    min: 8
+    min: 1
     max: 32
 
   negative_sample_size:
     distribution: q_uniform
     q: 1
-    min: 4
+    min: 1
     max: 16
 
   hidden_dim:
-    distribution: q_log_uniform_values
-    q: 1
-    min: 6
-    max: 12
+    value: 10
 
   gamma:
     distribution: uniform
@@ -60,7 +57,10 @@ parameters:
     max: 8e-4
 
   max_steps:
-    value: 70000
+    value: 50000
+
+  valid_steps:
+    value: 5000
 
   test_batch_size:
     value: 16
@@ -75,7 +75,7 @@ parameters:
     value: HITS@1  # Metric to save the best model
   
   saving_threshold:
-    value: 0.75  # Threshold for saving the best model
+    value: 0.84  # Threshold for saving the best model
 
   # (Optional) Positional argument 16+
   additional_params:

@@ -60,6 +60,7 @@ def main():
             "--max_steps", str(config.max_steps),
             "-save", f"models/{config.model}_{config.dataset}_dim{config.hidden_dim}_{timestamp}",
             "--test_batch_size", str(config.test_batch_size),
+            "--valid_steps", str(config.valid_steps),
             "--saving_metric", config.saving_metric,
             "--saving_threshold", str(config.saving_threshold),
             "--random_seed", str(config.seed),
