@@ -591,7 +591,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.epsilon = epsilon                 # This is the error margin in the distance for finding the answer
 
         # (self.W1, self.W2, self.W1Dropout, self.W2Dropout, self.path_encoder, self.concat_projector) = (
-        (self.concat_projector, self.W2, self.W1Dropout, self.W2Dropout, _) = (
+        # (self.concat_projector, self.W2, self.W1Dropout, self.W2Dropout, _) = (
+        (self.W1, self.W2, self.W1Dropout, self.W2Dropout, self.path_encoder, self.concat_projector) = (
             self._define_modules(
                 self.entity_dim,
                 self.ff_dropout_rate,
@@ -700,12 +701,16 @@ class ITLGraphEnvironment(Environment, nn.Module):
         ########################################
         # ! Inspecting projections (gradients variance is too high from the start)
 
-        # ! Approach 1: Normal Projection
-        concatenations = torch.cat(
-            [self.current_questions_emb, self.current_position], dim=-1
+        projected_state = torch.cat(
+            [self.q_projected, self.current_position], dim=-1
         )
 
-        projected_state = self.concat_projector(concatenations)
+        # # ! Approach 1: Normal Projection
+        # concatenations = torch.cat(
+        #     [self.current_questions_emb, self.current_position], dim=-1
+        # )
+
+        # projected_state = self.concat_projector(concatenations)
 
         # ! Approach 2: Attention Fusion (Gradients are not moving, must recheck)
         # projected_state = self.concat_projector(self.current_questions_emb, self.current_position)
@@ -762,6 +767,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
             batch_first=True,
         )
 
+        residual_adapter = ResidualAdapter(question_dim, entity_dim)
+
         # W1 = nn.LSTM(
         #     input_size=entity_dim + question_dim,
         #     hidden_size=history_dim,  # AFAIK equiv this output size
@@ -779,7 +786,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         #     fusion_dim=history_dim,
         # )
 
-        return W1, W2, W1Dropout, W2Dropout, path_encoder
+        return W1, W2, W1Dropout, W2Dropout, path_encoder, residual_adapter
 
     def reset(self, initial_states_info: torch.Tensor, answer_ent: List[int], relevant_ent: List[List[None]] = None) -> Observation:
         """
@@ -800,6 +807,9 @@ class ITLGraphEnvironment(Environment, nn.Module):
                 "Mis-use of the environment. Episode step must've been set back to 0 before end."
                 " Maybe you did not end your episode correctly"
             )
+        
+        device = self.path_encoder.parameters().__next__().device
+
         ## Values
         # Local Alias: initial_states_info is just a name we stick to in order to comply with inheritance of Environment.
         self.current_questions_emb = initial_states_info  # (batch_size, emb_dim)
@@ -812,13 +822,29 @@ class ITLGraphEnvironment(Environment, nn.Module):
         init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), relevant_ent)
         self.current_position = init_emb.clone()
 
+        # Initialize Hidden State
+        # self.hidden_state = torch.zeros(self.path_encoder.num_layers, len(answer_ent), self.path_encoder.hidden_size).to(device)
+        # self.cell_state = torch.zeros(self.path_encoder.num_layers, len(answer_ent), self.path_encoder.hidden_size).to(device)
+
+        # dummy_action = torch.zeros((len(answer_ent), self.action_dim)).to(device)
+
         # ! Inspecting projections (gradients variance is too high from the start)
 
-        # ! Approach 1: Normal Projection
-        concatenations = torch.cat(
-            [self.current_questions_emb, init_emb], dim=-1
+        self.q_projected = self.concat_projector(self.current_questions_emb)
+
+        projected_state = torch.cat(
+            [self.q_projected, init_emb], dim=-1
         )
-        projected_state = self.concat_projector(concatenations)
+
+        # projected_state = torch.cat(
+        #     [self.q_projected, dummy_action], dim=-1
+        # )
+
+        # ! Approach 1: Normal Projection
+        # concatenations = torch.cat(
+        #     [self.current_questions_emb, init_emb], dim=-1
+        # )
+        # projected_state = self.concat_projector(concatenations)
 
         # ! Approach 2: Attention Fusion (Gradients are not moving, must recheck)
         # projected_state = self.concat_projector(self.current_questions_emb, init_emb)
@@ -902,3 +928,17 @@ class AttentionFusion(nn.Module):
         # Weighted sum of values
         fused_embedding = attention_weights * value
         return fused_embedding
+
+class ResidualAdapter(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim, output_dim),
+            nn.ReLU(),
+            nn.Linear(output_dim, output_dim)
+        )
+
+        self.residual = nn.Linear(input_dim, output_dim)
+
+    def forward(self, x):
+        return self.proj(x) + self.residual(x)
