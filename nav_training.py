@@ -150,6 +150,7 @@ def rollout(
     # Prepare lists to be returned
     ########################################
     log_action_probs = []
+    entropies = []
     kg_rewards = []
     eval_metrics = DefaultDict(list)
 
@@ -174,26 +175,18 @@ def rollout(
 
         # Ask the navigator to navigate, agent is presented state, not position
         # State is meant to summrized path history.
-        sampled_actions, log_probs, entropies = nav_agent(cur_state)
+        sampled_actions, log_probs, entropy = nav_agent(cur_state)
 
         # TODO: Make sure we are gettign rewards from the environment.
         observations, kg_extrinsic_rewards, kg_dones = env.step(sampled_actions)
-        # Ah ssampled_actions are the ones that have to go against the knowlde garph.
-
-        states = observations.state
-        
-        # For now, we use states given by the path encoder and positions mostly for debugging
-        states_so_far.append(states)
 
         # VISITED EMBEDDINGS IS THE ENCODER
 
         ########################################
         # Calculate the Reward
         ########################################
-        stacked_states = torch.stack(states_so_far).permute(1, 0, 2)
         
         # Calculate how close we are
-
         kg_intrinsic_reward = env.knowledge_graph.absolute_difference(
             observations.kge_cur_pos.unsqueeze(1),
             answer_tensor,
@@ -205,8 +198,11 @@ def rollout(
         ########################################
         # Log Stuff for across batch
         ########################################
-        cur_state = states
+        
+        # For now, we use states given by the path encoder and positions mostly for debugging
+        states_so_far.append(observations.state)
         log_action_probs.append(log_probs)
+        entropies.append(entropy)
 
         ########################################
         # Stuff that we will only use for evaluation
@@ -226,7 +222,7 @@ def rollout(
         eval_metrics = {k: torch.stack(v) for k, v in eval_metrics.items()}
 
     # Return Rewards of Rollout as a Tensor
-    return log_action_probs, kg_rewards, eval_metrics
+    return log_action_probs, entropies, kg_rewards, eval_metrics
 
 def batch_loop_dev(
     env: ITLGraphEnvironment,
@@ -284,7 +280,7 @@ def batch_loop_dev(
         question_embeddings = env.get_llm_embeddings(questions, device)
 
     logger.warning(f"About to go into rollout")
-    log_probs, kg_rewards, eval_extras = rollout(
+    log_probs, entropies, kg_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         env,
@@ -300,6 +296,7 @@ def batch_loop_dev(
     ########################################
 
     log_probs_t = torch.stack(log_probs).T
+    entropies_t = torch.stack(entropies).T
     num_steps = log_probs_t.shape[-1]
 
     assert not torch.isnan(log_probs_t).any(), "NaN detected in the log probs (batch_loop_dev). Aborting training."
@@ -319,10 +316,12 @@ def batch_loop_dev(
 
     # TODO: Check if a weight is needed for combining the rewards
     gamma = nav_agent.gamma
-    discounted_rewards = torch.zeros_like(kg_rewards_t.clone()).to(kg_rewards_t.device) # Shape: (batch_size, num_steps)
-    discounted_rewards[:,-1] +=  kg_rewards_t[:,-1]
-    for t in reversed(range(num_steps - 1)):
-        discounted_rewards[:,t] += gamma * (kg_rewards_t[:,t + 1])
+    discounted_rewards = torch.zeros_like(kg_rewards_t).to(device) # Shape: (batch_size, num_steps)
+    G = torch.zeros_like(kg_rewards_t[:, 0]).to(device) # Shape: (batch_size, num_steps)
+
+    for t in reversed(range(kg_rewards_t.size(1))):
+        G = kg_rewards_t[:, t] + gamma * G
+        discounted_rewards[:, t] = G
 
     # Sample-wise normalization of the rewards for stability
     # discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
@@ -330,7 +329,7 @@ def batch_loop_dev(
     #--------------------------------------------------------------------------
     'Loss Calculation'
 
-    pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
+    pg_loss = -(discounted_rewards * log_probs_t)  - nav_agent.beta * entropies_t # Have to negate it into order to do gradient ascent
 
     logger.warning(f"We just left dev rollout")
 
@@ -342,6 +341,7 @@ def batch_loop(
     mini_batch: pd.DataFrame,  # Perhaps change this ?
     nav_agent: ContinuousPolicyGradient,
     steps_in_episode: int,
+    warmup: bool = False,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
     Executes a batch loop for training the navigation agent.
@@ -392,7 +392,20 @@ def batch_loop(
     else:
         question_embeddings = env.get_llm_embeddings(questions, device)
 
-    log_probs, kg_rewards, eval_extras = rollout(
+    if warmup:
+        with torch.no_grad():
+            _, _, _, eval_extras = rollout(
+                steps_in_episode,
+                nav_agent,
+                env,
+                question_embeddings,
+                relevant_entities=relevant_entities,
+                relevant_rels=relevant_rels,
+                answer_id=answer_id,
+            )
+        return torch.tensor(0.0, device=device), eval_extras
+
+    log_probs, entropies, kg_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         env,
@@ -408,6 +421,7 @@ def batch_loop(
     logger.debug("About to calculate rewards")
 
     log_probs_t = torch.stack(log_probs).T
+    entropies_t = torch.stack(entropies).T
     num_steps = log_probs_t.shape[-1]
 
     #-------------------------------------------------------------------------
@@ -423,10 +437,16 @@ def batch_loop(
 
     # TODO: Check if a weight is needed for combining the rewards
     gamma = nav_agent.gamma
-    discounted_rewards = torch.zeros_like(kg_rewards_t.clone()).to(kg_rewards_t.device) # Shape: (batch_size, num_steps)
-    discounted_rewards[:,-1] += kg_rewards_t[:,-1]
-    for t in reversed(range(num_steps - 1)):
-        discounted_rewards[:,t] += gamma * (kg_rewards_t[:,t + 1])
+    discounted_rewards = torch.zeros_like(kg_rewards_t).to(device) # Shape: (batch_size, num_steps)
+    G = torch.zeros_like(kg_rewards_t[:, 0]).to(device) # Shape: (batch_size, num_steps)
+
+    for t in reversed(range(kg_rewards_t.size(1))):
+        G = kg_rewards_t[:, t] + gamma * G
+        discounted_rewards[:, t] = G
+
+    # discounted_rewards[:,-1] += kg_rewards_t[:,-1]
+    # for t in reversed(range(num_steps - 1)):
+    #     discounted_rewards[:,t] += gamma * (kg_rewards_t[:,t + 1])
 
     # Sample-wise normalization of the rewards for stability
     # discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
@@ -435,7 +455,7 @@ def batch_loop(
     #--------------------------------------------------------------------------
     'Loss Calculation'
 
-    pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
+    pg_loss = -(discounted_rewards * log_probs_t) - nav_agent.beta * entropies_t # Have to negate it into order to do gradient ascent
 
     return pg_loss, eval_extras
 
@@ -719,7 +739,8 @@ def train_nav_multihopkg(
     ########################################
     # Epoch Loop
     ########################################
-    for epoch_id in tqdm(range(start_epoch, epochs), desc="Epoch"):
+    for epoch_id in tqdm(range(epochs), desc="Epoch"):
+        is_warmup = epoch_id < start_epoch
 
         logger.info("Epoch {}".format(epoch_id))
         # TODO: Perhaps evaluate the epochs?
@@ -765,102 +786,105 @@ def train_nav_multihopkg(
 
             optimizer.zero_grad()
             pg_loss, _ = batch_loop(
-                env, mini_batch, nav_agent, steps_in_episode
+                env, mini_batch, nav_agent, steps_in_episode, warmup=is_warmup
             )
 
-            if torch.isnan(pg_loss).any():
-                logger.error("NaN detected in the loss. Aborting training.")
+            if not is_warmup:
+                if torch.isnan(pg_loss).any():
+                    logger.error("NaN detected in the loss. Aborting training.")
 
-            # Logg the mean, std, min, max of the rewards
-            reinforce_terms_mean = pg_loss.mean()
-            reinforce_terms_mean_item = reinforce_terms_mean.item()
-            reinforce_terms_std_item = pg_loss.std().item()
-            reinforce_terms_min_item = pg_loss.min().item()
-            reinforce_terms_max_item = pg_loss.max().item()
-            logger.debug(f"Reinforce terms mean: {reinforce_terms_mean_item}, std: {reinforce_terms_std_item}, min: {reinforce_terms_min_item}, max: {reinforce_terms_max_item}")
+                # Logg the mean, std, min, max of the rewards
+                reinforce_terms_mean = pg_loss.mean()
+                reinforce_terms_mean_item = reinforce_terms_mean.item()
+                reinforce_terms_std_item = pg_loss.std().item()
+                reinforce_terms_min_item = pg_loss.min().item()
+                reinforce_terms_max_item = pg_loss.max().item()
+                logger.debug(f"Reinforce terms mean: {reinforce_terms_mean_item}, std: {reinforce_terms_std_item}, min: {reinforce_terms_min_item}, max: {reinforce_terms_max_item}")
 
-            # TODO: Uncomment and try: (but comment out the normalization in batch_loop and bacth_loop_dev)
-            # pg_loss = tensor_normalization(pg_loss)
+                # TODO: Uncomment and try: (but comment out the normalization in batch_loop and bacth_loop_dev)
+                # pg_loss = tensor_normalization(pg_loss)
 
-            #---------------------------------
-            'Backward pass'
-            logger.debug("Bout to go backwords")
-            reinforce_terms_mean.backward()
-            
-            #---------------------------------
-            'Gradient Tracking'
+                #---------------------------------
+                'Backward pass'
+                logger.debug("Bout to go backwords")
+                reinforce_terms_mean.backward()
+                
+                #---------------------------------
+                'Gradient Tracking'
 
-            if sample_offset_idx == 0:
+                if sample_offset_idx == 0:
 
-                # Ask for the DAG to be dumped
-                if track_gradients:
-                    grad_logger.dump_visual_dag(destination_path=f"./figures/grads/dag_{epoch_id:02d}.png", figsize=(10, 100)) # type: ignore
+                    # Ask for the DAG to be dumped
+                    if track_gradients:
+                        grad_logger.dump_visual_dag(destination_path=f"./figures/grads/dag_{epoch_id:02d}.png", figsize=(10, 100)) # type: ignore
 
-            if torch.all(nav_agent.mu_layer.weight.grad == 0):
-                logger.warning("Gradients are zero for mu_layer!")
+                if torch.all(nav_agent.mu_layer.weight.grad == 0):
+                    logger.warning("Gradients are zero for mu_layer!")
 
 
-            # Inspecting vanishing gradient
-            if sample_offset_idx % num_batches_till_eval == 0 and verbose:
-                # Retrieve named parameters from the optimizer
-                named_params = [
-                    (named_param_map[param], param)
-                    for group in optimizer.param_groups
-                    for param in group['params']
-                ]
+                # Inspecting vanishing gradient
+                if sample_offset_idx % num_batches_till_eval == 0 and verbose:
+                    # Retrieve named parameters from the optimizer
+                    named_params = [
+                        (named_param_map[param], param)
+                        for group in optimizer.param_groups
+                        for param in group['params']
+                    ]
 
-                # Wandb hisotram of modules
-                histograms = histogram_all_modules(modules_to_log, num_buckets=20)
-                # Report the histograms to wandb
+                    # Wandb hisotram of modules
+                    histograms = histogram_all_modules(modules_to_log, num_buckets=20)
+                    # Report the histograms to wandb
+                    if wandb_on:
+                        for name, histogram in histograms.items():
+                            wandb.log({f"{name}/Histogram": wandb.Histogram(np_histogram=histogram)})
+
+
+                    # Iterate and calculate gradients as needed
+                    for name, param in named_params:
+                        if param.requires_grad and ('bias' not in name) and (param.grad is not None):
+                            if name == 'weight': name = 'concat_projector.weight'               
+                            grads = param.grad.detach().cpu()
+                            weights = param.detach().cpu()
+
+                            dist_tracker.write_dist_parameters(grads, name, "Gradient", writer, epoch_id)
+                            dist_tracker.write_dist_parameters(weights, name, "Weights", writer, epoch_id)
+
+                            if wandb_on:
+                                wandb.log({f"{name}/Gradient": wandb.Histogram(grads.numpy().flatten())})
+                                wandb.log({f"{name}/Weights": wandb.Histogram(weights.numpy().flatten())})
+                            elif visualize:
+                                dist_tracker.write_dist_histogram(
+                                    grads.numpy().flatten(),
+                                    name, 
+                                    'g', 
+                                    "Gradient Histogram", 
+                                    "Grad Value", 
+                                    "Frequency", 
+                                    writer, 
+                                    epoch_id
+                                )
+                                dist_tracker.write_dist_histogram(
+                                    weights.numpy().flatten(), 
+                                    name, 
+                                    'b', 
+                                    "Weights Histogram", 
+                                    "Weight Value", 
+                                    "Frequency", 
+                                    writer, 
+                                    epoch_id
+                                )
+                
                 if wandb_on:
-                    for name, histogram in histograms.items():
-                        wandb.log({f"{name}/Histogram": wandb.Histogram(np_histogram=histogram)})
+                    loss_item = pg_loss.mean().item()
+                    logger.info(f"Submitting train/pg_loss: {loss_item} to wandb")
+                    wandb.log({"train/pg_loss": loss_item})
 
+                #---------------------------------
+                'Optimizer step'
 
-                # Iterate and calculate gradients as needed
-                for name, param in named_params:
-                    if param.requires_grad and ('bias' not in name) and (param.grad is not None):
-                        if name == 'weight': name = 'concat_projector.weight'               
-                        grads = param.grad.detach().cpu()
-                        weights = param.detach().cpu()
-
-                        dist_tracker.write_dist_parameters(grads, name, "Gradient", writer, epoch_id)
-                        dist_tracker.write_dist_parameters(weights, name, "Weights", writer, epoch_id)
-
-                        if wandb_on:
-                            wandb.log({f"{name}/Gradient": wandb.Histogram(grads.numpy().flatten())})
-                            wandb.log({f"{name}/Weights": wandb.Histogram(weights.numpy().flatten())})
-                        elif visualize:
-                            dist_tracker.write_dist_histogram(
-                                grads.numpy().flatten(),
-                                name, 
-                                'g', 
-                                "Gradient Histogram", 
-                                "Grad Value", 
-                                "Frequency", 
-                                writer, 
-                                epoch_id
-                            )
-                            dist_tracker.write_dist_histogram(
-                                weights.numpy().flatten(), 
-                                name, 
-                                'b', 
-                                "Weights Histogram", 
-                                "Weight Value", 
-                                "Frequency", 
-                                writer, 
-                                epoch_id
-                            )
-            
-            if wandb_on:
-                loss_item = pg_loss.mean().item()
-                logger.info(f"Submitting train/pg_loss: {loss_item} to wandb")
-                wandb.log({"train/pg_loss": loss_item})
-
-            #---------------------------------
-            'Optimizer step'
-
-            optimizer.step()
+                optimizer.step()
+            else:
+                logger.info(f"[Warmup] Skipping gradient update at batch {batch_count}")
 
             batch_count += 1
 
@@ -1052,6 +1076,8 @@ def main():
         use_kge_question_embedding=args.use_kge_question_embedding,
     ).to(args.device)
 
+    # env.concat_projector.to(args.device)
+
     # Now we load this from the embedding models
 
     # TODO: Reorganizew the parameters lol
@@ -1066,7 +1092,8 @@ def main():
         num_rollout_steps=args.num_rollout_steps,
         dim_action=dim_relation,
         dim_hidden=args.rnn_hidden,
-        dim_observation=args.history_dim,  # observation will be into history
+        # dim_observation=args.history_dim,  # observation will be into history
+        dim_observation=dim_entity + dim_entity,
     ).to(args.device)
 
     # ======================================
