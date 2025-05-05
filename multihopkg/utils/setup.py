@@ -4,10 +4,13 @@ import subprocess
 def set_seeds(seed):
     import torch
     import numpy as np
+    import random
 
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 def get_git_root() -> Optional[str]:
     # NOTE: This will break if we remove the .git folder (could very well happen).
