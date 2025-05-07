@@ -76,8 +76,8 @@ class ContinuousPolicyGradient(nn.Module):
 
         # ! Stabilizing Sigma, Limiting the values for the actions to be within a certain range [-pi, pi] for the phase
         # ! Approach 1: Default
-        log_sigma = self.sigma_layer(projections)
-
+        log_sigma = self.sigma_layer(projections).clamp(min=-5, max=4)  # Stabilizing Sigma, Preventing extremes
+        
         # ! Approach 2: Clampings
         # log_sigma = torch.clamp(self.sigma_layer(projections), min=0, max=torch.pi)  # Stabilizing Sigma, Preventing extremes
 
@@ -96,7 +96,7 @@ class ContinuousPolicyGradient(nn.Module):
 
         log_probs = dist.log_prob(actions).sum(dim=-1) # ONLY WORKS ASSUMING INDEPENDENCE (which so far we obey).
 
-        return actions, log_probs, entropy
+        return actions, log_probs, entropy, mu, sigma
 
 
     def _define_modules(self, input_dim:int, observation_dim: int, hidden_dim: int):

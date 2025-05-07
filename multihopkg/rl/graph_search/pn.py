@@ -788,7 +788,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         return W1, W2, W1Dropout, W2Dropout, path_encoder, residual_adapter
 
-    def reset(self, initial_states_info: torch.Tensor, answer_ent: List[int], relevant_ent: List[List[None]] = None) -> Observation:
+    def reset(self, initial_states_info: torch.Tensor, answer_ent: List[int], relevant_ent: List[List[None]] = None, warmup: bool = True) -> Observation:
         """
         Will reset the episode to the initial position
         This will happen by grabbign the initial_states_info embeddings, concatenating them with the centroid and then passing them to the environment
@@ -802,7 +802,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         """
 
         # Sanity Check: Make sure we finilized previos epsiode correclty
-        if self.current_step_no != self.steps_in_episode:
+        if self.current_step_no != self.steps_in_episode and not(warmup):
             raise RuntimeError(
                 "Mis-use of the environment. Episode step must've been set back to 0 before end."
                 " Maybe you did not end your episode correctly"

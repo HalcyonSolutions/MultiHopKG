@@ -769,7 +769,7 @@ def load_qa_data(
             f"Done. Result dumped at : \n\033[93m\033[4m{train_metadata['saved_paths']}\033[0m"
         )
 
-    return train_df, dev_df, train_metadata
+    return train_df, dev_df, test_df, train_metadata
 
 
 @stale_code
