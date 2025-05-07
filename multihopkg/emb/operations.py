@@ -35,7 +35,7 @@ def normalize_angle_smooth(angle: torch.Tensor) -> torch.Tensor:
     return torch.atan2(torch.sin(angle), torch.cos(angle))
 
 
-def angular_difference(angle1: torch.Tensor, angle2: torch.Tensor, smooth: bool = True) -> torch.Tensor:
+def angular_difference(angle1: torch.Tensor, angle2: torch.Tensor, smooth: bool = True, use_abs: bool = False) -> torch.Tensor:
     """
     Compute the shortest angular difference between two angles in radians.
 
@@ -52,7 +52,9 @@ def angular_difference(angle1: torch.Tensor, angle2: torch.Tensor, smooth: bool 
         torch.Tensor: The absolute shortest distance between the two angles in radians.
     """
     diff = normalize_angle_smooth(angle2 - angle1) if smooth else normalize_angle(angle2 - angle1)
-    return torch.abs(diff)
+    if use_abs:
+        return torch.abs(diff)
+    return diff
 
 
 def total_angular_displacement(angle1: torch.Tensor, angle2: torch.Tensor) -> torch.Tensor:
@@ -69,7 +71,7 @@ def total_angular_displacement(angle1: torch.Tensor, angle2: torch.Tensor) -> to
     Returns:
         torch.Tensor: Sum of angular differences along the last dimension.
     """
-    return angular_difference(angle1, angle2).sum(dim=-1)
+    return angular_difference(angle1, angle2, use_abs = True).sum(dim=-1)
 
 def cosine_similarity(A: torch.Tensor, B: torch.Tensor):
     """
