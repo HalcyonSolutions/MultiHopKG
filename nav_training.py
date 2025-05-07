@@ -106,6 +106,8 @@ def warmup_models(
     relevant_rels: List[List[int]],
     answer_id: List[int],
     adapter_scalar: float = 0.1,
+    sigma_scalar: float = 0.1,
+    expected_sigma: float = 0.005, # best gueess so far 0.01
 ):
     """
     Warmup step to train Residual Adapter and Stochastic Policy using supervised targets:
@@ -157,7 +159,9 @@ def warmup_models(
     # === Losses ===
     adapter_loss = nn.functional.mse_loss(adapter_out, rel_emb)
     policy_loss = nn.functional.mse_loss(mu, target_action)
-    policy_loss += 0.1 * nn.functional.mse_loss(sigma, torch.full_like(sigma, 0.1))
+    policy_loss += sigma_scalar * nn.functional.mse_loss(sigma, torch.full_like(sigma, expected_sigma)) 
+
+    #Note: Sigma might be unstabilizing the training, but it is not clear yet.
 
     return policy_loss + adapter_scalar * adapter_loss
 
@@ -782,7 +786,7 @@ def test_nav_multihopkg(
     print(f"Test Data Size: {len(test_data)}")
     print(f"Hits@1: {hits_1:.4f}, Hits@3: {hits_3:.4f}, Hits@10: {hits_10:.4f}")
     print(f"Mean Rank: {mr:.4f}, Mean Reciprocal Rank: {mrr:.4f}")
-    print(f"Distance: {distance:.4f}")
+    print(f"Mean Distance to Answer: {distance:.4f}")
 
     return {
         "hits_1": hits_1,
@@ -895,6 +899,12 @@ def train_nav_multihopkg(
             list(env.concat_projector.parameters()) + list(nav_agent.parameters())
         ),
         lr=learning_rate
+    )
+
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=10000,
+        gamma=0.95,
     )
 
     modules_to_log: List[nn.Module] = [nav_agent]
@@ -1127,6 +1137,7 @@ def train_nav_multihopkg(
                                 )
 
                 optimizer.step()
+                scheduler.step()
                 # logger.info(f"[Warmup] update at epoch/batch {epoch_id}/{batch_count}")
 
             batch_count += 1
