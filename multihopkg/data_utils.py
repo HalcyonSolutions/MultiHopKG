@@ -617,6 +617,7 @@ def process_and_cache_triviaqa_data(
     answer_tokenizer: PreTrainedTokenizer,
     entity2id: Dict[str, int],
     relation2id: Dict[str, int],
+    override_split: bool = True,
 ) -> Tuple[DFSplit, Dict] :
     """
     Args:
@@ -647,9 +648,12 @@ def process_and_cache_triviaqa_data(
     # !TODO: Make this more flexible and relavant entities and relations be optional features
     questions = csv_df["Question"]
     answers = csv_df["Answer"]
-    relevant_ent = extract_literals(csv_df["Relevant-Entities"]) # This is a list of entities per entry
-    relevant_rel = extract_literals(csv_df["Relevant-Relations"]) # This is a list of relations per entry
+    query_ent = csv_df["Query-Entity"]
+    query_rel = csv_df["Query-Relation"]
     answer_ent = csv_df["Answer-Entity"]
+    paths = extract_literals(csv_df["Paths"]) if 'Paths' in csv_df.columns else None
+    splitLabel = csv_df["SplitLabel"] if 'splitLabel' in csv_df.columns else None
+    hops = csv_df["Hops"] if 'Hops' in csv_df.columns else None
 
     # Ensure directory exists
     dir_name = os.path.dirname(cached_toked_qatriples_metadata_path)
@@ -664,9 +668,11 @@ def process_and_cache_triviaqa_data(
     )
 
     # Preparing the KG data by converting text to indices
-    relevant_ent = relevant_ent.apply(lambda ents: [entity2id[ent] for ent in ents])
-    relevant_rel = relevant_rel.apply(lambda rels: [relation2id[rel] for rel in rels])
+    query_ent = query_ent.map(lambda ent: entity2id[ent])
+    query_rel = query_rel.map(lambda rel: relation2id[rel])
     answer_ent = answer_ent.map(lambda ent: entity2id[ent])
+    if paths is not None:
+        paths = paths.map(lambda path: [[entity2id[head], relation2id[rel], entity2id[tail]] for head, rel, tail in path])
 
     # timestamp without nanoseconds
     timestamp = str(int(datetime.now().timestamp()))
@@ -683,10 +689,18 @@ def process_and_cache_triviaqa_data(
 
     # Start amalgamating the data into its final form
     # TODO: test set
-    new_df = pd.concat([questions, answers, relevant_ent, relevant_rel, answer_ent], axis=1)
-    new_df = new_df.sample(frac=1).reset_index(drop=True)
-    train_df, test_df = train_test_split(new_df, test_size=0.2, random_state=42)
-    dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=42)
+    new_df = pd.concat([questions, answers, query_ent, query_rel, answer_ent, paths, hops, splitLabel], axis=1)
+    new_df = new_df.sample(frac=1).reset_index(drop=True) # Shuffle before splitting by label
+
+    # Check if splitLabel column has meaningful values to guide the split
+    if override_split and 'splitLabel' in new_df.columns and new_df['splitLabel'].notna().any() and not new_df['splitLabel'].eq('').all():
+        train_df = new_df[new_df['splitLabel'] == 'train'].reset_index(drop=True)
+        test_df = new_df[new_df['splitLabel'] != 'train'].reset_index(drop=True)
+        dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=42)
+    else:
+        new_df = new_df.sample(frac=1).reset_index(drop=True)
+        train_df, test_df = train_test_split(new_df, test_size=0.2, random_state=42)
+        dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=42)
 
     if not isinstance(train_df, pd.DataFrame) or not isinstance(dev_df, pd.DataFrame) or not isinstance(test_df, pd.DataFrame):
         raise RuntimeError("The data was not loaded properly. Please check the data loading code.")
@@ -702,9 +716,12 @@ def process_and_cache_triviaqa_data(
         "answer_tokenizer": answer_tokenizer.name_or_path,
         "question_column": "Question",
         "answer_column": "Answer",
-        "relevant_entities_column": "Relevant-Entities",
-        "relevant_relations_column": "Relevant-Relations",
+        "query_entities_column": "Query-Entity",
+        "query_relations_column": "Query-Relation",
         "answer_entity_column": "Answer-Entity",
+        "paths_column": "Paths",
+        "hops_column": "Hops",
+        "splitLabel_column": "SplitLabel",
         "0-index_column": True,
         "date_processed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "saved_paths": cached_split_locations,
@@ -726,6 +743,7 @@ def load_qa_data(
     relation2id: Dict[str, int], 
     logger: logging.Logger,
     force_recompute: bool = False,
+    override_split: bool = True,
 ):
 
     if os.path.exists(cached_metadata_path) and not force_recompute:
@@ -762,6 +780,7 @@ def load_qa_data(
                 answer_tokenzier,
                 entity2id,
                 relation2id,
+                override_split=override_split,
             )
         )
         train_df, dev_df, test_df = df_split.train, df_split.dev, df_split.test

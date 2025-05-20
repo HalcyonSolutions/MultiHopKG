@@ -102,12 +102,13 @@ def warmup_models(
     nav_agent: ContinuousPolicyGradient,
     env: ITLGraphEnvironment,
     question_embeddings: torch.Tensor,
-    relevant_entities: List[List[int]],
-    relevant_rels: List[List[int]],
+    query_ent: List[int],
+    query_rel: List[int],
     answer_id: List[int],
-    adapter_scalar: float = 0.1,
+    steps_in_episode: int,
+    adapter_scalar: float = 0.5,
     sigma_scalar: float = 0.1,
-    expected_sigma: float = 0.005, # best gueess so far 0.01
+    expected_sigma: float = 0.03, # best gueess so far 0.01
 ):
     """
     Warmup step to train Residual Adapter and Stochastic Policy using supervised targets:
@@ -116,19 +117,8 @@ def warmup_models(
     """
 
     # === Get batch entities and relations ===
-    # head_ids = [ents[0] for ents in relevant_entities]
-    # rel_ids = [rels[0] for rels in relevant_rels]
-
-    head_ids = []
-    rel_ids = []
-    for ents, rels in zip(relevant_entities, relevant_rels):
-        min_len = min(len(ents), len(rels))
-        if min_len == 0: # Should be caught by the earlier check, but as a safeguard
-            assert False, "Empty list of entities or relations"
-        idx = random.randrange(min_len)
-        head_ids.append(ents[idx])
-        rel_ids.append(rels[idx])
-
+    head_ids = query_ent
+    rel_ids = query_rel
 
     head_emb = get_embeddings_from_indices(
         env.knowledge_graph.entity_embedding,
@@ -145,21 +135,31 @@ def warmup_models(
         torch.tensor(answer_id, dtype=torch.int),
     ) # Shape: (batch, embedding_dim)
 
-
     target_action = env.knowledge_graph.difference(head_emb, tail_emb) # Ideal translation vector
+    # Note: target action is in radians if using pRotatE
 
     # === Reset env to update current position and projected question ===
-    _ = env.reset(question_embeddings, answer_id, relevant_ent=relevant_entities, warmup=True)
+    _ = env.reset(question_embeddings, answer_id, query_ent=query_ent, warmup=True)
 
     # === Compute forward pass ===
     adapter_out = env.q_projected
     state = torch.cat([adapter_out, head_emb], dim=-1)
     _, _, _, mu, sigma = nav_agent(state)
 
+
+    if env.knowledge_graph.model_name == "pRotatE":
+        mu = env.knowledge_graph.denormalize_embedding(mu)
+
+        mu_sine, mu_cos = torch.sin(mu), torch.cos(mu)
+        target_action_sine, target_action_cos = torch.sin(target_action), torch.cos(target_action)
+        policy_loss = nn.functional.mse_loss(mu_sine, target_action_sine) + nn.functional.mse_loss(mu_cos, target_action_cos)
+    else:
+        policy_loss = nn.functional.mse_loss(mu, target_action)
+
+
     # === Losses ===
     adapter_loss = nn.functional.mse_loss(adapter_out, rel_emb)
-    policy_loss = nn.functional.mse_loss(mu, target_action)
-    policy_loss += sigma_scalar * nn.functional.mse_loss(sigma, torch.full_like(sigma, expected_sigma)) 
+    policy_loss += sigma_scalar * nn.functional.mse_loss(sigma, torch.full_like(sigma, expected_sigma))
 
     #Note: Sigma might be unstabilizing the training, but it is not clear yet.
 
@@ -171,8 +171,8 @@ def rollout(
     nav_agent: ContinuousPolicyGradient,
     env: ITLGraphEnvironment,
     questions_embeddings: torch.Tensor,
-    relevant_entities: List[List[int]],
-    relevant_rels: List[List[int]],
+    query_ent: List[int],
+    query_rel: List[int],
     answer_id: List[int],
     dev_mode: bool = False,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], Dict[str, Any]]:
@@ -194,9 +194,9 @@ def rollout(
             The knowledge graph environment that provides observations, rewards, and state transitions.
         questions_embeddings (torch.Tensor): 
             Pre-embedded representations of the questions to be answered. Shape: (batch_size, embedding_dim).
-        relevant_entities (List[List[int]]): 
+        query_entity (List[int]): 
             A list of relevant entities for each question, represented as lists of entity IDs.
-        relevant_rels (List[List[int]]): 
+        query_rel (Listint]): 
             A list of relevant relations for each question, represented as lists of relation IDs.
         answer_id (List[int]): 
             A list of IDs corresponding to the correct answer entities.
@@ -231,7 +231,7 @@ def rollout(
     observations = env.reset(
         questions_embeddings,
         answer_ent = answer_id,
-        relevant_ent = relevant_entities
+        query_ent = query_ent
     )
 
     cur_state = observations.state
@@ -339,11 +339,11 @@ def batch_loop_dev(
 
     # Deconstruct the batch
     questions = mini_batch["Question"].tolist()
-    relevant_entities = mini_batch["Relevant-Entities"].tolist()
-    relevant_rels = mini_batch["Relevant-Relations"].tolist()
+    query_ent = mini_batch["Query-Entity"].tolist()
+    query_rel = mini_batch["Query-Relation"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
     if env.use_kge_question_embedding:
-        question_embeddings = env.get_kge_question_embedding(relevant_entities, relevant_rels, device) # Shape: (batch, 2*embedding_dim)
+        question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
     else:
         question_embeddings = env.get_llm_embeddings(questions, device)
 
@@ -353,8 +353,8 @@ def batch_loop_dev(
         nav_agent,
         env,
         question_embeddings,
-        relevant_entities = relevant_entities,
-        relevant_rels = relevant_rels,
+        query_ent = query_ent,
+        query_rel = query_rel,
         answer_id = answer_id,
         dev_mode=True,
     )
@@ -452,21 +452,22 @@ def batch_loop(
 
     # Deconstruct the batch
     questions = mini_batch["Question"].tolist()
-    relevant_entities = mini_batch["Relevant-Entities"].tolist()
-    relevant_rels = mini_batch["Relevant-Relations"].tolist()
+    query_ent = mini_batch["Query-Entity"].tolist()
+    query_rel = mini_batch["Query-Relation"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
     if env.use_kge_question_embedding:
-        question_embeddings = env.get_kge_question_embedding(relevant_entities, relevant_rels, device) # Shape: (batch, 2*embedding_dim)
+        question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
     else:
         question_embeddings = env.get_llm_embeddings(questions, device)
 
     if warmup:
         loss = warmup_models(
+            steps_in_episode=steps_in_episode,
             nav_agent=nav_agent,
             env=env,
             question_embeddings=question_embeddings,
-            relevant_entities=relevant_entities,
-            relevant_rels=relevant_rels,
+            query_ent=query_ent,
+            query_rel=query_rel,
             answer_id=answer_id,
         )
         return loss, {}
@@ -476,8 +477,8 @@ def batch_loop(
         nav_agent,
         env,
         question_embeddings,
-        relevant_entities = relevant_entities,
-        relevant_rels = relevant_rels,
+        query_ent = query_ent,
+        query_rel = query_rel,
         answer_id = answer_id,
     )
 
@@ -628,8 +629,8 @@ def evaluate_training(
         
         current_evaluations["reference_questions"] = mini_batch["Question"]
         current_evaluations["true_answer"] = mini_batch["Answer"]
-        current_evaluations["relevant_entities"] = mini_batch["Relevant-Entities"]
-        current_evaluations["relevant_relations"] = mini_batch["Relevant-Relations"]
+        current_evaluations["query_entity"] = mini_batch["Query-Entity"]
+        current_evaluations["query_relation"] = mini_batch["Query-Relation"]
         current_evaluations["true_answer_id"] = mini_batch["Answer-Entity"]
 
         # Get the Metrics
@@ -703,6 +704,10 @@ def test_nav_multihopkg(
     test_data: pd.DataFrame,
     steps_in_episode: int,
     batch_size_test: int,
+    verbose: bool,
+    # max_entities: int = None,
+    max_entities: int = 50, # TODO: Make this a parameter in alpha, however using this compromises the MR metric. In literature, 50 is used.
+    desc: str = "Testing Batches",
 ):
     # Set in testing mode
     nav_agent.eval()
@@ -718,16 +723,22 @@ def test_nav_multihopkg(
     mrr = []
 
     num_entities = env.knowledge_graph.entity_embedding.size(0) # considering the whole graph
-    for sample_offset_idx in tqdm(range(0, len(test_data), batch_size_test), desc="Testing Batches", leave=False):
+
+    if max_entities is None:
+        max_entities = num_entities
+    elif max_entities > num_entities:
+        max_entities = num_entities
+
+    for sample_offset_idx in tqdm(range(0, len(test_data), batch_size_test), desc=desc, leave=False):
         mini_batch = test_data[sample_offset_idx : sample_offset_idx + batch_size_test] 
         
         # Deconstruct the batch
         questions = mini_batch["Question"].tolist()
-        relevant_entities = mini_batch["Relevant-Entities"].tolist()
-        relevant_rels = mini_batch["Relevant-Relations"].tolist()
+        query_ent = mini_batch["Query-Entity"].tolist()
+        query_rel = mini_batch["Query-Relation"].tolist()
         answer_id = mini_batch["Answer-Entity"].tolist()
         if env.use_kge_question_embedding:
-            question_embeddings = env.get_kge_question_embedding(relevant_entities, relevant_rels, device) # Shape: (batch, 2*embedding_dim)
+            question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
         else:
             question_embeddings = env.get_llm_embeddings(questions, device)
 
@@ -740,7 +751,7 @@ def test_nav_multihopkg(
         observations = env.reset(
             question_embeddings,
             answer_ent = answer_id,
-            relevant_ent = relevant_entities
+            query_ent = query_ent
         )
 
         cur_state = observations.state
@@ -759,15 +770,20 @@ def test_nav_multihopkg(
             answer_tensor,
         ).norm(dim=-1)
 
-        _, entity_indices = env.ann_index_manager_ent.search(observations.kge_cur_pos.detach().cpu(), num_entities)
+        _, entity_indices = env.ann_index_manager_ent.search(observations.kge_cur_pos.detach().cpu(), max_entities)
 
         results = (entity_indices == answer_ids_tensors)
         hits_1.append(results[:, :1].any(dim=-1))
         hits_3.append(results[:, :3].any(dim=-1))
         hits_10.append(results[:, :10].any(dim=-1))
 
-        mr.append(torch.where(results)[1].int() + 1)
-        mrr.append(mr[-1].float().reciprocal())
+        ranks = torch.full((answer_tensor.size(0),), num_entities + 1, dtype=torch.float) # In case we don't find anything, make num_entities + 1 the default rank (pessimitic assumption), using max_entities + 1 is considered too optimistic
+
+        row_idx, col_idx = torch.nonzero(results, as_tuple=True)                          # get the indices of the found answers, if any
+        ranks[row_idx] = col_idx.float() + 1                                              # Only update ranks where answers are found, otherwise keep the default
+
+        mr.append(ranks)
+        mrr.append(1.0 / ranks)        
 
         distance.append(kg_intrinsic_reward)
 
@@ -782,11 +798,12 @@ def test_nav_multihopkg(
     mrr = torch.cat(mrr).float().mean().item()
     distance = torch.cat(distance).float().mean().item()
 
-    print(f"Test Results:")
-    print(f"Test Data Size: {len(test_data)}")
-    print(f"Hits@1: {hits_1:.4f}, Hits@3: {hits_3:.4f}, Hits@10: {hits_10:.4f}")
-    print(f"Mean Rank: {mr:.4f}, Mean Reciprocal Rank: {mrr:.4f}")
-    print(f"Mean Distance to Answer: {distance:.4f}")
+    if verbose:
+        print(f"Test Results:")
+        print(f"Test Data Size: {len(test_data)}")
+        print(f"Hits@1: {hits_1:.4f}, Hits@3: {hits_3:.4f}, Hits@10: {hits_10:.4f}")
+        print(f"Mean Rank: {mr:.4f}, Mean Reciprocal Rank: {mrr:.4f}")
+        print(f"Mean Distance to Answer: {distance:.4f}")
 
     return {
         "hits_1": hits_1,
@@ -935,7 +952,7 @@ def train_nav_multihopkg(
             optimizer = torch.optim.Adam(  # type: ignore
                 filter(
                     lambda p: p.requires_grad,
-                    list(env.concat_projector.parameters()) + list(nav_agent.parameters())
+                    list(env.concat_projector.parameters()) + list(nav_agent.fc1.parameters()) + list(nav_agent.mu_layer.parameters())
                 ),
                 lr=learning_rate
             )
@@ -954,22 +971,24 @@ def train_nav_multihopkg(
             ########################################
             # Evaluation
             ########################################
-            if batch_count % mbatches_b4_eval == 0:
-                evaluate_training(
-                    env,
-                    dev_df,
-                    nav_agent,
-                    steps_in_episode,
-                    batch_size_dev,
-                    batch_count,
-                    verbose,
-                    visualize,
-                    writer,
-                    question_tokenizer,
-                    wandb_on,
-                    iteration = epoch_id * (len(train_data) // batch_size // mbatches_b4_eval) + (batch_count // mbatches_b4_eval),
-                    timestamp=timestamp,
-                )
+
+            'For debugging purposes, comment back in if needed'
+            # if batch_count % mbatches_b4_eval == 0:
+            #     evaluate_training(
+            #         env,
+            #         dev_df,
+            #         nav_agent,
+            #         steps_in_episode,
+            #         batch_size_dev,
+            #         batch_count,
+            #         verbose,
+            #         visualize,
+            #         writer,
+            #         question_tokenizer,
+            #         wandb_on,
+            #         iteration = epoch_id * (len(train_data) // batch_size // mbatches_b4_eval) + (batch_count // mbatches_b4_eval),
+            #         timestamp=timestamp,
+            #     )
 
             ########################################
             # Training
@@ -1142,14 +1161,55 @@ def train_nav_multihopkg(
 
             batch_count += 1
 
+        # For dump evaluation
+        evaluate_training(
+            env = env,
+            dev_df = dev_df,
+            nav_agent = nav_agent,
+            steps_in_episode = steps_in_episode,
+            batch_size_dev = batch_size_dev,
+            batch_count = batch_count,
+            verbose = verbose,
+            visualize = visualize,
+            writer = writer,
+            question_tokenizer = question_tokenizer,
+            wandb_on = wandb_on,
+            iteration = epoch_id,
+            timestamp = timestamp,
+        )
+
+        # Evaluate the Model Performance at the End of the Epoch
+        valid_eval_metrics = test_nav_multihopkg(
+            env = env,
+            nav_agent = nav_agent,
+            test_data = dev_df,
+            steps_in_episode = steps_in_episode,
+            batch_size_test = batch_size_dev,
+            verbose = True,
+            desc = f"Validating Batches {epoch_id}",
+        )
+
+        for key, value in valid_eval_metrics.items():
+            if wandb_on:
+                wandb.log({f"valid/{key}": value})
+            else:
+                writer.add_scalar(f"valid/{key}", value, epoch_id)
+
     # Evaluate the Model Performance at the End
-    eval_metrics = test_nav_multihopkg(
+    test_eval_metrics = test_nav_multihopkg(
         env = env,
         nav_agent = nav_agent,
         test_data = test_data,
         steps_in_episode = steps_in_episode,
         batch_size_test = batch_size_dev,
+        verbose = True
     )
+
+    for key, value in valid_eval_metrics.items():
+        if wandb_on:
+            wandb.log({f"test/{key}": value})
+        else:
+            writer.add_scalar(f"test/{key}", value, epoch_id)
 
 def main():
     """

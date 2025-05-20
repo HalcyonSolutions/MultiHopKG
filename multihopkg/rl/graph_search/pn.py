@@ -788,14 +788,14 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         return W1, W2, W1Dropout, W2Dropout, path_encoder, residual_adapter
 
-    def reset(self, initial_states_info: torch.Tensor, answer_ent: List[int], relevant_ent: List[List[None]] = None, warmup: bool = True) -> Observation:
+    def reset(self, initial_states_info: torch.Tensor, answer_ent: List[int], query_ent: List[int] = None, warmup: bool = True) -> Observation:
         """
         Will reset the episode to the initial position
         This will happen by grabbign the initial_states_info embeddings, concatenating them with the centroid and then passing them to the environment
         Args:
             - initial_state_info (torch.Tensor): In this implemntation sit is the initial_states_info
             - answer_ent (List[int]): The answer entity for the current batch
-            - relevant_ent (List[List[None]]): The relevant entities for the current batch
+            - query_ent (List[int]): The relevant entities for the current batch
         Returnd:
             - postion (torch.Tensor): Position in the graph
             - state (torch.Tensor): Aggregation of states visited so far summarized in a single vector per batch element.
@@ -819,7 +819,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent).detach() # (batch_size, emb_dim)
         self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device).detach() # (batch_size, 1)
 
-        init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), relevant_ent)
+        init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), query_ent)
         self.current_position = init_emb.clone()
 
         # Initialize Hidden State
@@ -878,11 +878,12 @@ class ITLGraphEnvironment(Environment, nn.Module):
     def get_random_embedding(self, size: int, relevant_ent: List[int] = None) -> torch.Tensor:
         return self.get_starting_embedding('random', size)
     
-    def get_relevant_embedding(self, size: int, relevant_ent: List[int] = None) -> torch.Tensor:
-        relevant_ent = torch.tensor([random.choice(sublist) for sublist in relevant_ent], dtype=torch.int)
+    def get_relevant_embedding(self, size: int, query_entity: List[int] = None) -> torch.Tensor:
+        # relevant_ent = torch.tensor([random.choice(sublist) for sublist in relevant_ent], dtype=torch.int)
+        query_entity = torch.tensor(query_entity, dtype=torch.int)
     
         # Create more complete representation of state
-        init_emb = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, relevant_ent)
+        init_emb = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, query_entity)
 
         if init_emb.dim() == 1: init_emb = init_emb.unsqueeze(0)
         assert init_emb.shape[0] == size, "Error! Initial states info and relevant embeddings must have the same batch size."
