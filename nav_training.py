@@ -729,67 +729,67 @@ def test_nav_multihopkg(
     elif max_entities > num_entities:
         max_entities = num_entities
 
-    for sample_offset_idx in tqdm(range(0, len(test_data), batch_size_test), desc=desc, leave=False):
-        mini_batch = test_data[sample_offset_idx : sample_offset_idx + batch_size_test] 
-        
-        # Deconstruct the batch
-        questions = mini_batch["Question"].tolist()
-        query_ent = mini_batch["Query-Entity"].tolist()
-        query_rel = mini_batch["Query-Relation"].tolist()
-        answer_id = mini_batch["Answer-Entity"].tolist()
-        if env.use_kge_question_embedding:
-            question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
-        else:
-            question_embeddings = env.get_llm_embeddings(questions, device)
+    with torch.no_grad():
+        for sample_offset_idx in tqdm(range(0, len(test_data), batch_size_test), desc=desc, leave=False):
+            mini_batch = test_data[sample_offset_idx : sample_offset_idx + batch_size_test] 
+            
+            # Deconstruct the batch
+            questions = mini_batch["Question"].tolist()
+            query_ent = mini_batch["Query-Entity"].tolist()
+            query_rel = mini_batch["Query-Relation"].tolist()
+            answer_id = mini_batch["Answer-Entity"].tolist()
+            if env.use_kge_question_embedding:
+                question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
+            else:
+                question_embeddings = env.get_llm_embeddings(questions, device)
 
-        answer_tensor = get_embeddings_from_indices(
-                env.knowledge_graph.entity_embedding,
-                torch.tensor(answer_id, dtype=torch.int),
-        ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
+            answer_tensor = get_embeddings_from_indices(
+                    env.knowledge_graph.entity_embedding,
+                    torch.tensor(answer_id, dtype=torch.int),
+            ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
 
-        # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
-        observations = env.reset(
-            question_embeddings,
-            answer_ent = answer_id,
-            query_ent = query_ent
-        )
+            # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
+            observations = env.reset(
+                question_embeddings,
+                answer_ent = answer_id,
+                query_ent = query_ent
+            )
 
-        cur_state = observations.state
-
-        answer_ids_tensors = torch.tensor(answer_id).unsqueeze(1)
-        for t in range(steps_in_episode):
-            sampled_actions, _, _, _, _ = nav_agent(cur_state)
-            observations, _, _ = env.step(sampled_actions)
             cur_state = observations.state
 
-        # TODO: Evaluate at every step,
-        # current evaluation is at the end of the episode
+            answer_ids_tensors = torch.tensor(answer_id).unsqueeze(1)
+            for t in range(steps_in_episode):
+                sampled_actions, _, _, _, _ = nav_agent(cur_state)
+                observations, _, _ = env.step(sampled_actions)
+                cur_state = observations.state
 
-        kg_intrinsic_reward = env.knowledge_graph.absolute_difference(
-            observations.kge_cur_pos.unsqueeze(1),
-            answer_tensor,
-        ).norm(dim=-1)
+            # TODO: Evaluate at every step,
+            # current evaluation is at the end of the episode
 
-        _, entity_indices = env.ann_index_manager_ent.search(observations.kge_cur_pos.detach().cpu(), max_entities)
+            kg_intrinsic_reward = env.knowledge_graph.absolute_difference(
+                observations.kge_cur_pos.unsqueeze(1),
+                answer_tensor,
+            ).norm(dim=-1).cpu()
 
-        results = (entity_indices == answer_ids_tensors)
-        hits_1.append(results[:, :1].any(dim=-1))
-        hits_3.append(results[:, :3].any(dim=-1))
-        hits_10.append(results[:, :10].any(dim=-1))
+            _, entity_indices = env.ann_index_manager_ent.search(observations.kge_cur_pos.detach().cpu(), max_entities)
 
-        ranks = torch.full((answer_tensor.size(0),), num_entities + 1, dtype=torch.float) # In case we don't find anything, make num_entities + 1 the default rank (pessimitic assumption), using max_entities + 1 is considered too optimistic
+            results = (entity_indices == answer_ids_tensors)
+            hits_1.append(results[:, :1].any(dim=-1))
+            hits_3.append(results[:, :3].any(dim=-1))
+            hits_10.append(results[:, :10].any(dim=-1))
 
-        row_idx, col_idx = torch.nonzero(results, as_tuple=True)                          # get the indices of the found answers, if any
-        ranks[row_idx] = col_idx.float() + 1                                              # Only update ranks where answers are found, otherwise keep the default
+            ranks = torch.full((answer_tensor.size(0),), num_entities + 1, dtype=torch.float) # In case we don't find anything, make num_entities + 1 the default rank (pessimitic assumption), using max_entities + 1 is considered too optimistic
 
-        mr.append(ranks)
-        mrr.append(1.0 / ranks)        
+            row_idx, col_idx = torch.nonzero(results, as_tuple=True)                          # get the indices of the found answers, if any
+            ranks[row_idx] = col_idx.float() + 1                                              # Only update ranks where answers are found, otherwise keep the default
 
-        distance.append(kg_intrinsic_reward)
+            mr.append(ranks)
+            mrr.append((1.0 / ranks))        
 
-        del entity_indices
-        del results
+            distance.append(kg_intrinsic_reward)
 
+            del entity_indices
+            del results
 
     hits_1 = torch.cat(hits_1).float().mean().item()
     hits_3 = torch.cat(hits_3).float().mean().item()
