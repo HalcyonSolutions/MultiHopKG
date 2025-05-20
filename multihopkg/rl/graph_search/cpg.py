@@ -12,6 +12,12 @@ import torch.nn.functional as F
 
 import sys
 
+def init_layer_uniform(layer: nn.Linear, init_w: float = 3e-3) -> nn.Linear:
+    """Init uniform parameters on the single layer."""
+    layer.weight.data.uniform_(-init_w, init_w)
+    layer.bias.data.uniform_(-init_w, init_w)
+    return layer
+
 class ContinuousPolicyGradient(nn.Module):
     # TODO: remove all parameters that are irrelevant here
     def __init__(
@@ -27,6 +33,8 @@ class ContinuousPolicyGradient(nn.Module):
         dim_action: int,
         dim_hidden: int,
         dim_observation: int,
+        log_std_min: float = -20,
+        log_std_max: float = 2,
     ):
         super(ContinuousPolicyGradient, self).__init__()
 
@@ -50,6 +58,9 @@ class ContinuousPolicyGradient(nn.Module):
             input_dim=dim_observation, observation_dim=dim_action, hidden_dim=dim_hidden
         )
 
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+
         # # Inference hyperparameters
         # self.beam_size = beam_size
         # # Analysis
@@ -72,17 +83,10 @@ class ContinuousPolicyGradient(nn.Module):
             observations: torch.Tensor. Shape: (batch_len, path_encoder_dim)
         """
         projections = self.fc1(observations)
-        mu = self.mu_layer(projections)
+        mu = self.mu_layer(projections).tanh()
 
-        # ! Stabilizing Sigma, Limiting the values for the actions to be within a certain range [-pi, pi] for the phase
-        # ! Approach 1: Default
-        log_sigma = self.sigma_layer(projections).clamp(min=-5, max=4)  # Stabilizing Sigma, Preventing extremes
-        
-        # ! Approach 2: Clampings
-        # log_sigma = torch.clamp(self.sigma_layer(projections), min=0, max=torch.pi)  # Stabilizing Sigma, Preventing extremes
-
-        # ! Approach 3: Sigmoid
-        # log_sigma = torch.pi * F.sigmoid(self.sigma_layer(projections))
+        log_sigma = self.sigma_layer(projections).tanh()  # Stabilizing Sigma, Preventing extremes
+        log_sigma = self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (log_sigma + 1)
 
         sigma = torch.exp(log_sigma)
 
@@ -92,9 +96,16 @@ class ContinuousPolicyGradient(nn.Module):
 
         # # Now Sample from it 
         # # TODO: Ensure we are sampling correctly from this 
-        actions = dist.rsample()
+        z = dist.rsample()
 
-        log_probs = dist.log_prob(actions).sum(dim=-1) # ONLY WORKS ASSUMING INDEPENDENCE (which so far we obey).
+        # normalize action and log_prob
+        # see appendix C of https://arxiv.org/abs/1801.01290
+        # Trick to ensure the actions are within the range [-1, 1]
+        actions = z.tanh()
+        log_probs = dist.log_prob(z) - torch.log(1 - actions.pow(2) + 1e-7)
+        log_probs = log_probs.sum(-1)
+
+        # log_probs = dist.log_prob(actions).sum(dim=-1) # ONLY WORKS ASSUMING INDEPENDENCE (which so far we obey).
 
         return actions, log_probs, entropy, mu, sigma
 
@@ -111,11 +122,8 @@ class ContinuousPolicyGradient(nn.Module):
 
         # ! Approach 2: Xavier Uniform Initialization (Works better)
         # Custom initialization
-        nn.init.xavier_uniform_(mu_layer.weight)  # Xavier uniform initialization
-        nn.init.constant_(mu_layer.bias, 0.1)    # Initialize bias to a small positive value
-
-        nn.init.xavier_uniform_(sigma_layer.weight)
-        nn.init.constant_(sigma_layer.bias, -1)  # Bias closer to log(0.1)
+        mu_layer = init_layer_uniform(mu_layer)
+        sigma_layer = init_layer_uniform(sigma_layer)
 
         return fc1, mu_layer, sigma_layer
 
