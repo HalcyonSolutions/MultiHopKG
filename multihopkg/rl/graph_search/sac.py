@@ -28,7 +28,7 @@ class Actor(nn.Module):
         dim_action: int,
         log_std_min: float = -20,
         log_std_max: float = 2,
-        hidden_dim: int = 128,
+        dim_hidden: int = 128,
     ):
         """Initialize.You can design your own Actor architecture."""
         super(Actor, self).__init__()
@@ -41,15 +41,15 @@ class Actor(nn.Module):
         self.log_std_max = log_std_max
 
         # set the hidden layers
-        self.hidden1 = nn.Linear(dim_observation, hidden_dim)
-        self.hidden2 = nn.Linear(hidden_dim, hidden_dim)
+        self.hidden1 = nn.Linear(dim_observation, dim_hidden)
+        self.hidden2 = nn.Linear(dim_hidden, dim_hidden)
 
         # set log_std layer
-        self.log_std_layer = nn.Linear(hidden_dim, dim_action)
+        self.log_std_layer = nn.Linear(dim_hidden, dim_action)
         self.log_std_layer = init_layer_uniform(self.log_std_layer)
 
         # set mean layer
-        self.mu_layer = nn.Linear(hidden_dim, dim_action)
+        self.mu_layer = nn.Linear(dim_hidden, dim_action)
         self.mu_layer = init_layer_uniform(self.mu_layer)
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
@@ -80,13 +80,13 @@ class Actor(nn.Module):
 
 
 class CriticQ(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int = 128):
+    def __init__(self, in_dim: int, dim_hidden: int = 128):
         """Initialize. You can design your own Q Critic architecture."""
         super(CriticQ, self).__init__()
 
-        self.hidden1 = nn.Linear(in_dim, hidden_dim)
-        self.hidden2 = nn.Linear(hidden_dim, hidden_dim)
-        self.out = nn.Linear(hidden_dim, 1)
+        self.hidden1 = nn.Linear(in_dim, dim_hidden)
+        self.hidden2 = nn.Linear(dim_hidden, dim_hidden)
+        self.out = nn.Linear(dim_hidden, 1)
         self.out = init_layer_uniform(self.out)
 
     def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
@@ -100,13 +100,13 @@ class CriticQ(nn.Module):
 
 
 class CriticV(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int = 128):
+    def __init__(self, in_dim: int, dim_hidden: int = 128):
         """Initialize. You can design your own V Critic architecture."""
         super(CriticV, self).__init__()
 
-        self.hidden1 = nn.Linear(in_dim, hidden_dim)
-        self.hidden2 = nn.Linear(hidden_dim, hidden_dim)
-        self.out = nn.Linear(hidden_dim, 1)
+        self.hidden1 = nn.Linear(in_dim, dim_hidden)
+        self.hidden2 = nn.Linear(dim_hidden, dim_hidden)
+        self.out = nn.Linear(dim_hidden, 1)
         self.out = init_layer_uniform(self.out)
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
@@ -161,11 +161,179 @@ class ReplayBuffer:
     def __len__(self) -> int:
         return self.size
 
+class ACagent(nn.Module):
+    def __init__(
+        self,
+        beta: float,
+        gamma: float,
+        dim_observation: int,
+        dim_action: int,
+        log_std_min: float = -20,
+        log_std_max: float = 2,
+        dim_hidden: int = 128,
+    ):
+        """Initialize. You can design your own SAC architecture."""
+        super().__init__()
+        
+        self.beta = beta  # entropy regularization parameter
+        self.gamma = gamma
 
+        # Actor
+        self.actor = Actor(
+            beta=beta,
+            gamma=gamma,
+            dim_observation=dim_observation,
+            dim_action=dim_action,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
+            dim_hidden=dim_hidden,
+        )
+
+        self.critic_v = CriticV(in_dim=dim_observation, dim_hidden=dim_hidden)
+
+    def forward(self, state: torch.Tensor):
+        """Forward method implementation."""
+        return self.actor(state)
+
+class SAC:
+    def __init__(
+        self,
+        beta: float,
+        gamma: float,
+        dim_observation: int,
+        dim_action: int,
+        log_std_min: float = -20,
+        log_std_max: float = 2,
+        dim_hidden: int = 128,
+        lr: float = 3e-4,
+    ):
+        """Initialize. You can design your own SAC architecture."""
+        super(SAC, self).__init__()
+
+        self.lr = lr
+        self.gamma = gamma
+
+        # Actor
+        self.actor = Actor(
+            beta=beta,
+            gamma=gamma,
+            dim_observation=dim_observation,
+            dim_action=dim_action,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
+            dim_hidden=dim_hidden,
+        )
+
+        # Q Functions
+        self.critic_q1 = CriticQ(in_dim=dim_observation + dim_action, dim_hidden=dim_hidden)
+        self.critic_q2 = CriticQ(in_dim=dim_observation + dim_action, dim_hidden=dim_hidden)
+        
+        # V Function
+        self.critic_v = CriticV(in_dim=dim_observation, dim_hidden=dim_hidden)
+        self.critic_v_target = CriticV(in_dim=dim_observation, dim_hidden=dim_hidden)
+        self.critic_v_target.load_state_dict(self.critic_v.state_dict())
+        
+        # automatic entropy tuning
+        self.target_entropy = -np.prod((dim_action,)).item()  # heuristic
+        self.log_alpha = torch.zeros(1, requires_grad=True)
+        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=self.lr)
+
+        # optimizers
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=self.lr)
+        self.v_optimizer = optim.Adam(self.critic_v.parameters(), lr=self.lr)
+        self.qf_1_optimizer = optim.Adam(self.critic_q1.parameters(), lr=self.lr)
+        self.qf_2_optimizer = optim.Adam(self.critic_q2.parameters(), lr=self.lr)
+
+    def update_alpha(self, log_prob: torch.Tensor):
+        """Update alpha (dual problem)."""
+        alpha_loss = (-self.log_alpha.exp() * (log_prob + self.target_entropy).detach()).mean()
+
+        self.alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.alpha_optimizer.step()
+
+        return alpha_loss
+    
+    def forward(self, state: torch.Tensor):
+        """Forward method implementation."""
+        action, log_prob, entropy, mu, std = self.actor(state)
+        return action, log_prob, entropy, mu, std
+    
+    def compute_loss(self,
+                    log_prob: torch.Tensor,
+                    state: torch.Tensor,
+                    action: torch.Tensor,
+                    reward: torch.Tensor,
+                    next_state: torch.Tensor,
+                    done: torch.Tensor,
+                    new_action: torch.Tensor,
+                    last_step: bool = False,
+                    ) -> Tuple[torch.Tensor, ...]:
+        """Compute the loss for the model."""
+        # train alpha (dual problem)
+        alpha_loss = self.update_alpha(log_prob)
+
+        alpha = self.log_alpha.exp()  # used for the actor loss calculation
+
+        # Computing q function loss
+        mask = 1 - done
+
+        with torch.no_grad():
+            target_v = self.vf_target(next_state)
+            y = reward + self.gamma * mask * target_v
+
+        q1_pred = self.qf_1(state, action)
+        q2_pred = self.qf_2(state, action)
+
+        qf_1_loss = F.mse_loss(q1_pred, y)
+        qf_2_loss = F.mse_loss(q2_pred, y)
+        
+        # Computing v function loss
+        q1_new = self.qf_1(state, new_action)
+        q2_new = self.qf_2(state, new_action)
+        min_q_new = torch.min(q1_new, q2_new)
+
+        vf_pred = self.vf(state)
+        vf_target = min_q_new - alpha * log_prob
+        vf_loss = F.mse_loss(vf_pred, vf_target.detach())
+
+
+        if last_step:
+            actor_loss = (alpha * log_prob - min_q_new).mean()
+
+            # train actor
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor_optimizer.step()
+
+            # target update (vf)
+            self._target_soft_update()
+        else:
+            actor_loss = torch.zeros(())
+
+        # train Q functions
+        self.qf_1_optimizer.zero_grad()
+        qf_1_loss.backward()
+        self.qf_1_optimizer.step()
+
+        self.qf_2_optimizer.zero_grad()
+        qf_2_loss.backward()
+        self.qf_2_optimizer.step()
+
+        qf_loss = qf_1_loss + qf_2_loss
+
+        # train V function
+        self.vf_optimizer.zero_grad()
+        vf_loss.backward()
+        self.vf_optimizer.step()
+
+        return actor_loss.data, qf_loss.data, vf_loss.data, alpha_loss.data
+
+# Reference Class for SAC Agent
 class SACAgent:
     """SAC agent interacting with environment. """
 
-    def __init__(self, env: gym.Env, args=None):
+    def __init__(self, env, args=None):
         """Initialize."""
         obs_dim = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]
@@ -439,69 +607,69 @@ class SACAgent:
         for t_param, l_param in zip(self.vf_target.parameters(), self.vf.parameters()):
             t_param.data.copy_(tau * l_param.data + (1.0 - tau) * t_param.data)
 
-class ActionNormalizer(gym.ActionWrapper):
-    """Rescale and relocate the actions."""
+# class ActionNormalizer(gym.ActionWrapper):
+#     """Rescale and relocate the actions."""
 
-    def action(self, action: np.ndarray) -> np.ndarray:
-        """Change the range (-1, 1) to (low, high)."""
-        low = self.action_space.low
-        high = self.action_space.high
+#     def action(self, action: np.ndarray) -> np.ndarray:
+#         """Change the range (-1, 1) to (low, high)."""
+#         low = self.action_space.low
+#         high = self.action_space.high
 
-        scale_factor = (high - low) / 2
-        reloc_factor = high - scale_factor
+#         scale_factor = (high - low) / 2
+#         reloc_factor = high - scale_factor
 
-        action = action * scale_factor + reloc_factor
-        action = np.clip(action, low, high)
+#         action = action * scale_factor + reloc_factor
+#         action = np.clip(action, low, high)
 
-        return action
+#         return action
 
-    def reverse_action(self, action: np.ndarray) -> np.ndarray:
-        """Change the range (low, high) to (-1, 1)."""
-        low = self.action_space.low
-        high = self.action_space.high
+#     def reverse_action(self, action: np.ndarray) -> np.ndarray:
+#         """Change the range (low, high) to (-1, 1)."""
+#         low = self.action_space.low
+#         high = self.action_space.high
 
-        scale_factor = (high - low) / 2
-        reloc_factor = high - scale_factor
+#         scale_factor = (high - low) / 2
+#         reloc_factor = high - scale_factor
 
-        action = (action - reloc_factor) / scale_factor
-        action = np.clip(action, -1.0, 1.0)
+#         action = (action - reloc_factor) / scale_factor
+#         action = np.clip(action, -1.0, 1.0)
 
-        return action
+#         return action
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--wandb-run-name", type=str, default="cheetah-sac")
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--discount-factor", type=float, default=0.99)
-    parser.add_argument("--tau", type=float, default=5e-3)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--initial-random-steps", type=int, default=1000)
-    parser.add_argument("--memory-size", type=int, default=1000000)
-    parser.add_argument("--num-steps", type=int, default=1000000)
-    parser.add_argument("--policy-update-freq", type=int, default=2)
-    parser.add_argument("--seed", type=int, default=77)
-    args = parser.parse_args()
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument("--wandb-run-name", type=str, default="cheetah-sac")
+#     parser.add_argument("--lr", type=float, default=3e-4)
+#     parser.add_argument("--discount-factor", type=float, default=0.99)
+#     parser.add_argument("--tau", type=float, default=5e-3)
+#     parser.add_argument("--batch-size", type=int, default=128)
+#     parser.add_argument("--initial-random-steps", type=int, default=1000)
+#     parser.add_argument("--memory-size", type=int, default=1000000)
+#     parser.add_argument("--num-steps", type=int, default=1000000)
+#     parser.add_argument("--policy-update-freq", type=int, default=2)
+#     parser.add_argument("--seed", type=int, default=77)
+#     args = parser.parse_args()
     
-    local_time = time.localtime()
-    timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+#     local_time = time.localtime()
+#     timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
     
-    # W&B init
-    wandb.init(
-        project="RL-HW3-SAC-Cheetah",
-        config=vars(args),
-        name=f"{args.wandb_run_name}-{timestamp}",
-        save_code=True,
-    )
-    for k, v in wandb.config.items():
-        setattr(args, k, v)
+#     # W&B init
+#     wandb.init(
+#         project="RL-HW3-SAC-Cheetah",
+#         config=vars(args),
+#         name=f"{args.wandb_run_name}-{timestamp}",
+#         save_code=True,
+#     )
+#     for k, v in wandb.config.items():
+#         setattr(args, k, v)
     
-    print("Training arguments:")
-    for key, value in vars(args).items():
-        print(f"{key}: {value}")
+#     print("Training arguments:")
+#     for key, value in vars(args).items():
+#         print(f"{key}: {value}")
 
-    # environment
-    env = gym.make("HalfCheetah-v5", render_mode="rgb_array")
-    env = ActionNormalizer(env)
-    agent = SACAgent(env, args)
-    agent.train()
+#     # environment
+#     env = gym.make("HalfCheetah-v5", render_mode="rgb_array")
+#     env = ActionNormalizer(env)
+#     agent = SACAgent(env, args)
+#     agent.train()
