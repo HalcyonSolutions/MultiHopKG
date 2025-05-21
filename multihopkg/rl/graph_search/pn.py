@@ -767,7 +767,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             batch_first=True,
         )
 
-        residual_adapter = ResidualAdapter(question_dim, entity_dim)
+        residual_adapter = ResidualAdapter(question_dim, entity_dim + relation_dim)
 
         # W1 = nn.LSTM(
         #     input_size=entity_dim + question_dim,
