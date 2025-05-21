@@ -810,17 +810,18 @@ class ITLGraphEnvironment(Environment, nn.Module):
         
         device = self.path_encoder.parameters().__next__().device
 
-        ## Values
-        # Local Alias: initial_states_info is just a name we stick to in order to comply with inheritance of Environment.
-        self.current_questions_emb = initial_states_info  # (batch_size, emb_dim)
-        self.current_step_no = 0
+        with torch.no_grad():
+            ## Values
+            # Local Alias: initial_states_info is just a name we stick to in order to comply with inheritance of Environment.
+            self.current_questions_emb = initial_states_info  # (batch_size, emb_dim)
+            self.current_step_no = 0
 
-        # get the embeddings of the answer entities
-        self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent).detach() # (batch_size, emb_dim)
-        self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device).detach() # (batch_size, 1)
+            # get the embeddings of the answer entities
+            self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent).detach() # (batch_size, emb_dim)
+            self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device).detach() # (batch_size, 1)
 
-        init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), query_ent)
-        self.current_position = init_emb.clone()
+            init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), query_ent).to(device) # (batch_size, emb_dim)
+            self.current_position = init_emb.clone()
 
         # Initialize Hidden State
         # self.hidden_state = torch.zeros(self.path_encoder.num_layers, len(answer_ent), self.path_encoder.hidden_size).to(device)
