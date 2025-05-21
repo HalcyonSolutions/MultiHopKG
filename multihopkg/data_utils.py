@@ -618,6 +618,7 @@ def process_and_cache_triviaqa_data(
     entity2id: Dict[str, int],
     relation2id: Dict[str, int],
     override_split: bool = True,
+    logger: Optional[logging.Logger] = None,
 ) -> Tuple[DFSplit, Dict] :
     """
     Args:
@@ -652,7 +653,7 @@ def process_and_cache_triviaqa_data(
     query_rel = csv_df["Query-Relation"]
     answer_ent = csv_df["Answer-Entity"]
     paths = extract_literals(csv_df["Paths"]) if 'Paths' in csv_df.columns else None
-    splitLabel = csv_df["SplitLabel"] if 'splitLabel' in csv_df.columns else None
+    splitLabel = csv_df["SplitLabel"] if 'SplitLabel' in csv_df.columns else None
     hops = csv_df["Hops"] if 'Hops' in csv_df.columns else None
 
     # Ensure directory exists
@@ -693,13 +694,19 @@ def process_and_cache_triviaqa_data(
     new_df = new_df.sample(frac=1).reset_index(drop=True) # Shuffle before splitting by label
 
     # Check if splitLabel column has meaningful values to guide the split
-    if override_split and 'splitLabel' in new_df.columns and new_df['splitLabel'].notna().any() and not new_df['splitLabel'].eq('').all():
-        train_df = new_df[new_df['splitLabel'] == 'train'].reset_index(drop=True)
-        test_df = new_df[new_df['splitLabel'] != 'train'].reset_index(drop=True)
-        dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=42)
+    if override_split and 'SplitLabel' in new_df.columns and new_df['SplitLabel'].notna().any() and not new_df['SplitLabel'].eq('').all():
+        train_df = new_df[new_df['SplitLabel'] == 'train'].reset_index(drop=True)
+        test_df = new_df[new_df['SplitLabel'] != 'train'].reset_index(drop=True)
+        if logger: logger.info(f"Using splitLabel column to split the data into train and test sets.")
     else:
         new_df = new_df.sample(frac=1).reset_index(drop=True)
         train_df, test_df = train_test_split(new_df, test_size=0.2, random_state=42)
+
+     # If the test set is too small, use it as dev
+    if len(test_df) < 100:
+        dev_df = test_df
+        if logger: logger.warning("Test set is too small, using it as dev set!!")
+    else:
         dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=42)
 
     if not isinstance(train_df, pd.DataFrame) or not isinstance(dev_df, pd.DataFrame) or not isinstance(test_df, pd.DataFrame):
@@ -730,6 +737,17 @@ def process_and_cache_triviaqa_data(
 
     with open(cached_toked_qatriples_metadata_path, "w") as f:
         json.dump(metadata, f)
+
+    id2entity = {v: k for k, v in entity2id.items()}
+    id2relation = {v: k for k, v in relation2id.items()}
+
+    # Save the triplets to a file for later use with other algorithms
+    for name,df in {"train": train_df, "dev": dev_df, "test": test_df}.items():
+        triplets = []
+        for i, row in df.iterrows():
+            triplets.append((id2entity[row['Query-Entity']], id2relation[row['Query-Relation']], id2entity[row['Answer-Entity']]))
+        save_triplets = pd.DataFrame(triplets, columns=["head", "relation", "tail"])
+        save_triplets.to_csv(cached_split_locations[name].replace(".parquet", f"_{name}_triplets.txt"), sep='\t', index=False, header=False)
 
     return DFSplit(train=train_df, dev=dev_df, test=test_df), metadata
 
@@ -781,6 +799,7 @@ def load_qa_data(
                 entity2id,
                 relation2id,
                 override_split=override_split,
+                logger=logger,
             )
         )
         train_df, dev_df, test_df = df_split.train, df_split.dev, df_split.test
