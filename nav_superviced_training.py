@@ -98,7 +98,7 @@ def initial_setup() -> Tuple[argparse.Namespace, PreTrainedTokenizer, PreTrained
 
     return args, question_tokenizer, answer_tokenizer, logger
 
-def warmup_models(
+def supervise_models(
     nav_agent: ContinuousPolicyGradient,
     env: ITLGraphEnvironment,
     question_embeddings: torch.Tensor,
@@ -147,18 +147,21 @@ def warmup_models(
     _, _, _, mu, sigma = nav_agent(state)
 
 
-    if env.knowledge_graph.model_name == "pRotatE":
-        mu = env.knowledge_graph.denormalize_embedding(mu)
+    # if env.knowledge_graph.model_name == "pRotatE":
+    #     mu = env.knowledge_graph.denormalize_embedding(mu)
 
-        mu_sine, mu_cos = torch.sin(mu), torch.cos(mu)
-        target_action_sine, target_action_cos = torch.sin(target_action), torch.cos(target_action)
-        policy_loss = nn.functional.mse_loss(mu_sine, target_action_sine) + nn.functional.mse_loss(mu_cos, target_action_cos)
-    else:
-        policy_loss = nn.functional.mse_loss(mu, target_action)
+    #     mu_sine, mu_cos = torch.sin(mu), torch.cos(mu)
+    #     target_action_sine, target_action_cos = torch.sin(target_action), torch.cos(target_action)
+    #     policy_loss = nn.functional.mse_loss(mu_sine, target_action_sine) + nn.functional.mse_loss(mu_cos, target_action_cos)
+    # else:
+    policy_loss = nn.functional.mse_loss(mu, target_action)
 
 
     # === Losses ===
-    adapter_loss = nn.functional.mse_loss(adapter_out, rel_emb)
+    query_emb = torch.cat(
+        [head_emb, rel_emb], dim=-1
+    )
+    adapter_loss = nn.functional.mse_loss(adapter_out, query_emb)
     policy_loss += sigma_scalar * nn.functional.mse_loss(sigma, torch.full_like(sigma, expected_sigma))
 
     #Note: Sigma might be unstabilizing the training, but it is not clear yet.
@@ -460,7 +463,7 @@ def batch_loop(
     else:
         question_embeddings = env.get_llm_embeddings(questions, device)
 
-    loss = warmup_models(
+    loss = supervise_models(
         steps_in_episode=steps_in_episode,
         nav_agent=nav_agent,
         env=env,
@@ -843,7 +846,7 @@ def train_nav_multihopkg(
 
     local_time = time.localtime()
     timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
-    writer = SummaryWriter(log_dir=f'runs/nav/{env.knowledge_graph.model_name.lower()}/{timestamp}/')
+    writer = SummaryWriter(log_dir=f'runs/nav_sv/{env.knowledge_graph.model_name.lower()}/{timestamp}/')
 
     named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()))}
     optimizer = torch.optim.Adam(  # type: ignore
@@ -1231,7 +1234,7 @@ def main():
         dim_action=dim_relation,
         dim_hidden=args.rnn_hidden,
         # dim_observation=args.history_dim,  # observation will be into history
-        dim_observation=dim_entity + dim_entity,
+        dim_observation = 2*dim_entity + dim_relation,
     ).to(args.device)
 
     # ======================================
