@@ -70,6 +70,9 @@ def main():
         if config.additional_params:
             cmd += config.additional_params.split()
 
+        if str(config.model).lower() == "rotate":
+            cmd += ["--double_entity_embedding"]
+
         if str(config.track).lower() == "true":
             cmd += ["-track", "--wandb_project", config.wandb_project]
         
