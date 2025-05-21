@@ -1023,7 +1023,7 @@ def train_nav_multihopkg(
         verbose = True
     )
 
-    for key, value in valid_eval_metrics.items():
+    for key, value in test_eval_metrics.items():
         if wandb_on:
             wandb.log({f"test/{key}": value})
         else:
