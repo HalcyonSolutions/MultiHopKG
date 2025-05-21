@@ -338,7 +338,7 @@ def batch_loop_dev(
     # Start the batch loop with zero grad
     ########################################
     nav_agent.zero_grad()
-    device = nav_agent.fc1.weight.device
+    device = nav_agent.mu_layer.weight.device
 
     # Deconstruct the batch
     questions = mini_batch["Question"].tolist()
@@ -451,7 +451,7 @@ def batch_loop(
     # Start the batch loop with zero grad
     ########################################
     nav_agent.zero_grad()
-    device = nav_agent.fc1.weight.device
+    device = nav_agent.mu_layer.weight.device
 
     # Deconstruct the batch
     questions = mini_batch["Question"].tolist()
@@ -652,7 +652,7 @@ def test_nav_multihopkg(
     nav_agent.eval()
     env.eval()
 
-    device = nav_agent.fc1.weight.device
+    device = nav_agent.mu_layer.weight.device
 
     hits_1 = []
     hits_3 = []
@@ -885,16 +885,6 @@ def train_nav_multihopkg(
 
         # Set in training mode
         nav_agent.train()
-
-        if epoch_id == start_epoch:
-            # Reset the optimizer
-            optimizer = torch.optim.Adam(  # type: ignore
-                filter(
-                    lambda p: p.requires_grad,
-                    list(env.concat_projector.parameters()) + list(nav_agent.fc1.parameters()) + list(nav_agent.mu_layer.parameters())
-                ),
-                lr=learning_rate
-            )
 
         ##############################
         # Batch Loop
@@ -1224,13 +1214,8 @@ def main():
     # TODO: Reorganizew the parameters lol
     logger.info(":: Setting up the navigation agent")
     nav_agent = ContinuousPolicyGradient(
-        baseline=args.baseline,
         beta=args.beta,
         gamma=args.rl_gamma,
-        action_dropout_rate=args.action_dropout_rate,
-        action_dropout_anneal_factor=args.action_dropout_anneal_factor,
-        action_dropout_anneal_interval=args.action_dropout_anneal_interval,
-        num_rollout_steps=args.num_rollout_steps,
         dim_action=dim_relation,
         dim_hidden=args.rnn_hidden,
         # dim_observation=args.history_dim,  # observation will be into history

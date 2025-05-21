@@ -23,13 +23,8 @@ class ContinuousPolicyGradient(nn.Module):
     def __init__(
         # TODO: remove all parameters that are irrelevant here
         self,
-        baseline: str,
         beta: float,
         gamma: float,
-        action_dropout_rate: float,
-        action_dropout_anneal_factor: float,
-        action_dropout_anneal_interval: float,
-        num_rollout_steps: int,
         dim_action: int,
         dim_hidden: int,
         dim_observation: int,
@@ -39,33 +34,18 @@ class ContinuousPolicyGradient(nn.Module):
         super(ContinuousPolicyGradient, self).__init__()
 
         # Training hyperparameters
-        self.num_rollout_steps = num_rollout_steps
-        self.baseline = baseline
         self.beta = beta  # entropy regularization parameter
         self.gamma = gamma  # shrinking factor
-        self.action_dropout_rate = action_dropout_rate
-        self.action_dropout_anneal_factor = (
-            action_dropout_anneal_factor  # Used in parent
-        )
-        self.action_dropout_anneal_interval = (
-            action_dropout_anneal_interval  # Also used by parent
-        )
 
         ########################################
         # Torch Modules
         ########################################
-        self.fc1, self.mu_layer, self.sigma_layer = self._define_modules(
+        self.hidden1, self.hidden2, self.mu_layer, self.sigma_layer = self._define_modules(
             input_dim=dim_observation, observation_dim=dim_action, hidden_dim=dim_hidden
         )
 
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
-
-        # # Inference hyperparameters
-        # self.beam_size = beam_size
-        # # Analysis
-        # self.path_types = dict()
-        # self.num_path_types = 0
 
     def forward(
         self, observations: torch.Tensor
@@ -82,7 +62,9 @@ class ContinuousPolicyGradient(nn.Module):
         args
             observations: torch.Tensor. Shape: (batch_len, path_encoder_dim)
         """
-        projections = self.fc1(observations)
+        projections = F.relu(self.hidden1(observations))
+        projections = F.relu(self.hidden2(projections))
+
         mu = self.mu_layer(projections).tanh()
 
         log_sigma = self.sigma_layer(projections).tanh()  # Stabilizing Sigma, Preventing extremes
@@ -112,20 +94,17 @@ class ContinuousPolicyGradient(nn.Module):
 
     def _define_modules(self, input_dim:int, observation_dim: int, hidden_dim: int):
 
-        fc1 = nn.Linear(input_dim, hidden_dim)
+        hidden1 = nn.Linear(input_dim, hidden_dim)
+        hidden2 = nn.Linear(hidden_dim, hidden_dim)
         
         mu_layer = nn.Linear(hidden_dim, observation_dim)
         sigma_layer = nn.Linear(hidden_dim, observation_dim)
 
-        # ! Testing different initialization methods
-        # ! Approach 1: Default Initialization
-
-        # ! Approach 2: Xavier Uniform Initialization (Works better)
         # Custom initialization
         mu_layer = init_layer_uniform(mu_layer)
         sigma_layer = init_layer_uniform(sigma_layer)
 
-        return fc1, mu_layer, sigma_layer
+        return hidden1, hidden2, mu_layer, sigma_layer
 
     def _reparemeteriztion(self, dist, action):
         return dist.log_prob(action).sum(dim=-1)
