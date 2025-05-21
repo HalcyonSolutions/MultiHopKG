@@ -338,7 +338,7 @@ def batch_loop_dev(
     # Start the batch loop with zero grad
     ########################################
     nav_agent.zero_grad()
-    device = nav_agent.mu_layer.weight.device
+    device = next(nav_agent.parameters()).device
 
     # Deconstruct the batch
     questions = mini_batch["Question"].tolist()
@@ -451,7 +451,7 @@ def batch_loop(
     # Start the batch loop with zero grad
     ########################################
     nav_agent.zero_grad()
-    device = nav_agent.mu_layer.weight.device
+    device = next(nav_agent.parameters()).device
 
     # Deconstruct the batch
     questions = mini_batch["Question"].tolist()
@@ -652,7 +652,7 @@ def test_nav_multihopkg(
     nav_agent.eval()
     env.eval()
 
-    device = nav_agent.mu_layer.weight.device
+    device = next(nav_agent.parameters()).device
 
     hits_1 = []
     hits_3 = []
