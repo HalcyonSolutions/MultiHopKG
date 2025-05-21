@@ -98,73 +98,6 @@ def initial_setup() -> Tuple[argparse.Namespace, PreTrainedTokenizer, PreTrained
 
     return args, question_tokenizer, answer_tokenizer, logger
 
-def warmup_models(
-    nav_agent: ContinuousPolicyGradient,
-    env: ITLGraphEnvironment,
-    question_embeddings: torch.Tensor,
-    query_ent: List[int],
-    query_rel: List[int],
-    answer_id: List[int],
-    steps_in_episode: int,
-    adapter_scalar: float = 0.5,
-    sigma_scalar: float = 0.1,
-    expected_sigma: float = 0.03, # best gueess so far 0.01
-):
-    """
-    Warmup step to train Residual Adapter and Stochastic Policy using supervised targets:
-    - Adapter learns to map questions to relation embeddings.
-    - Policy learns to predict head→tail vector as continuous action.
-    """
-
-    # === Get batch entities and relations ===
-    head_ids = query_ent
-    rel_ids = query_rel
-
-    head_emb = get_embeddings_from_indices(
-        env.knowledge_graph.entity_embedding,
-        torch.tensor(head_ids, dtype=torch.int),
-    ) # Shape: (batch, embedding_dim)
-
-    rel_emb  = get_embeddings_from_indices(
-        env.knowledge_graph.relation_embedding,
-        torch.tensor(rel_ids, dtype=torch.int),
-    ) # Shape: (batch, embedding_dim)
-
-    tail_emb = get_embeddings_from_indices(
-        env.knowledge_graph.entity_embedding,
-        torch.tensor(answer_id, dtype=torch.int),
-    ) # Shape: (batch, embedding_dim)
-
-    target_action = env.knowledge_graph.difference(head_emb, tail_emb) # Ideal translation vector
-    # Note: target action is in radians if using pRotatE
-
-    # === Reset env to update current position and projected question ===
-    _ = env.reset(question_embeddings, answer_id, query_ent=query_ent, warmup=True)
-
-    # === Compute forward pass ===
-    adapter_out = env.q_projected
-    state = torch.cat([adapter_out, head_emb], dim=-1)
-    _, _, _, mu, sigma = nav_agent(state)
-
-
-    if env.knowledge_graph.model_name == "pRotatE":
-        mu = env.knowledge_graph.denormalize_embedding(mu)
-
-        mu_sine, mu_cos = torch.sin(mu), torch.cos(mu)
-        target_action_sine, target_action_cos = torch.sin(target_action), torch.cos(target_action)
-        policy_loss = nn.functional.mse_loss(mu_sine, target_action_sine) + nn.functional.mse_loss(mu_cos, target_action_cos)
-    else:
-        policy_loss = nn.functional.mse_loss(mu, target_action)
-
-
-    # === Losses ===
-    adapter_loss = nn.functional.mse_loss(adapter_out, rel_emb)
-    policy_loss += sigma_scalar * nn.functional.mse_loss(sigma, torch.full_like(sigma, expected_sigma))
-
-    #Note: Sigma might be unstabilizing the training, but it is not clear yet.
-
-    return policy_loss + adapter_scalar * adapter_loss
-
 def rollout(
     # TODO: self.mdl should point to (policy network)
     steps_in_episode: int,
@@ -409,7 +342,6 @@ def batch_loop(
     mini_batch: pd.DataFrame,  # Perhaps change this ?
     nav_agent: ContinuousPolicyGradient,
     steps_in_episode: int,
-    warmup: bool = False,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
     Executes a batch loop for training the navigation agent.
@@ -459,18 +391,6 @@ def batch_loop(
         question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
     else:
         question_embeddings = env.get_llm_embeddings(questions, device)
-
-    if warmup:
-        loss = warmup_models(
-            steps_in_episode=steps_in_episode,
-            nav_agent=nav_agent,
-            env=env,
-            question_embeddings=question_embeddings,
-            query_ent=query_ent,
-            query_rel=query_rel,
-            answer_id=answer_id,
-        )
-        return loss, {}
 
     log_probs, entropies, kg_rewards, eval_extras = rollout(
         steps_in_episode,
@@ -918,12 +838,6 @@ def train_nav_multihopkg(
         lr=learning_rate
     )
 
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer,
-        step_size=10000,
-        gamma=0.95,
-    )
-
     modules_to_log: List[nn.Module] = [nav_agent]
 
     # Variable to pass for logging
@@ -939,7 +853,6 @@ def train_nav_multihopkg(
     # Epoch Loop
     ########################################
     for epoch_id in tqdm(range(epochs), desc="Epoch"):
-        is_warmup = epoch_id < start_epoch
 
         logger.info("Epoch {}".format(epoch_id))
         # TODO: Perhaps evaluate the epochs?
@@ -997,167 +910,102 @@ def train_nav_multihopkg(
 
             optimizer.zero_grad()
 
-            if not is_warmup:
-                pg_loss, _ = batch_loop(
-                    env, mini_batch, nav_agent, steps_in_episode, warmup=is_warmup
-                )
-                if torch.isnan(pg_loss).any():
-                    logger.error("NaN detected in the loss. Aborting training.")
+            pg_loss, _ = batch_loop(
+                env, mini_batch, nav_agent, steps_in_episode
+            )
+            if torch.isnan(pg_loss).any():
+                logger.error("NaN detected in the loss. Aborting training.")
 
-                # Logg the mean, std, min, max of the rewards
-                reinforce_terms_mean = pg_loss.mean()
-                reinforce_terms_mean_item = reinforce_terms_mean.item()
-                reinforce_terms_std_item = pg_loss.std().item()
-                reinforce_terms_min_item = pg_loss.min().item()
-                reinforce_terms_max_item = pg_loss.max().item()
-                logger.debug(f"Reinforce terms mean: {reinforce_terms_mean_item}, std: {reinforce_terms_std_item}, min: {reinforce_terms_min_item}, max: {reinforce_terms_max_item}")
+            # Logg the mean, std, min, max of the rewards
+            reinforce_terms_mean = pg_loss.mean()
+            reinforce_terms_mean_item = reinforce_terms_mean.item()
+            reinforce_terms_std_item = pg_loss.std().item()
+            reinforce_terms_min_item = pg_loss.min().item()
+            reinforce_terms_max_item = pg_loss.max().item()
+            logger.debug(f"Reinforce terms mean: {reinforce_terms_mean_item}, std: {reinforce_terms_std_item}, min: {reinforce_terms_min_item}, max: {reinforce_terms_max_item}")
 
-                # TODO: Uncomment and try: (but comment out the normalization in batch_loop and bacth_loop_dev)
-                # pg_loss = tensor_normalization(pg_loss)
+            # TODO: Uncomment and try: (but comment out the normalization in batch_loop and bacth_loop_dev)
+            # pg_loss = tensor_normalization(pg_loss)
 
-                #---------------------------------
-                'Backward pass'
-                logger.debug("Bout to go backwords")
-                reinforce_terms_mean.backward()
-                
-                #---------------------------------
-                'Gradient Tracking'
+            #---------------------------------
+            'Backward pass'
+            logger.debug("Bout to go backwords")
+            reinforce_terms_mean.backward()
+            
+            #---------------------------------
+            'Gradient Tracking'
 
-                if sample_offset_idx == 0:
+            if sample_offset_idx == 0:
 
-                    # Ask for the DAG to be dumped
-                    if track_gradients:
-                        grad_logger.dump_visual_dag(destination_path=f"./figures/grads/dag_{epoch_id:02d}.png", figsize=(10, 100)) # type: ignore
+                # Ask for the DAG to be dumped
+                if track_gradients:
+                    grad_logger.dump_visual_dag(destination_path=f"./figures/grads/dag_{epoch_id:02d}.png", figsize=(10, 100)) # type: ignore
 
-                if torch.all(nav_agent.mu_layer.weight.grad == 0):
-                    logger.warning("Gradients are zero for mu_layer!")
-
-
-                # Inspecting vanishing gradient
-                if sample_offset_idx % num_batches_till_eval == 0 and verbose:
-                    # Retrieve named parameters from the optimizer
-                    named_params = [
-                        (named_param_map[param], param)
-                        for group in optimizer.param_groups
-                        for param in group['params']
-                    ]
-
-                    # Wandb hisotram of modules
-                    histograms = histogram_all_modules(modules_to_log, num_buckets=20)
-                    # Report the histograms to wandb
-                    if wandb_on:
-                        for name, histogram in histograms.items():
-                            wandb.log({f"{name}/Histogram": wandb.Histogram(np_histogram=histogram)})
+            if torch.all(nav_agent.mu_layer.weight.grad == 0):
+                logger.warning("Gradients are zero for mu_layer!")
 
 
-                    # Iterate and calculate gradients as needed
-                    for name, param in named_params:
-                        if param.requires_grad and ('bias' not in name) and (param.grad is not None):
-                            if name == 'weight': name = 'concat_projector.weight'               
-                            grads = param.grad.detach().cpu()
-                            weights = param.detach().cpu()
+            # Inspecting vanishing gradient
+            if sample_offset_idx % num_batches_till_eval == 0 and verbose:
+                # Retrieve named parameters from the optimizer
+                named_params = [
+                    (named_param_map[param], param)
+                    for group in optimizer.param_groups
+                    for param in group['params']
+                ]
 
-                            dist_tracker.write_dist_parameters(grads, name, "Gradient", writer, epoch_id)
-                            dist_tracker.write_dist_parameters(weights, name, "Weights", writer, epoch_id)
-
-                            if wandb_on:
-                                wandb.log({f"{name}/Gradient": wandb.Histogram(grads.numpy().flatten())})
-                                wandb.log({f"{name}/Weights": wandb.Histogram(weights.numpy().flatten())})
-                            elif visualize:
-                                dist_tracker.write_dist_histogram(
-                                    grads.numpy().flatten(),
-                                    name, 
-                                    'g', 
-                                    "Gradient Histogram", 
-                                    "Grad Value", 
-                                    "Frequency", 
-                                    writer, 
-                                    epoch_id
-                                )
-                                dist_tracker.write_dist_histogram(
-                                    weights.numpy().flatten(), 
-                                    name, 
-                                    'b', 
-                                    "Weights Histogram", 
-                                    "Weight Value", 
-                                    "Frequency", 
-                                    writer, 
-                                    epoch_id
-                                )
-                
+                # Wandb hisotram of modules
+                histograms = histogram_all_modules(modules_to_log, num_buckets=20)
+                # Report the histograms to wandb
                 if wandb_on:
-                    loss_item = pg_loss.mean().item()
-                    logger.info(f"Submitting train/pg_loss: {loss_item} to wandb")
-                    wandb.log({"train/pg_loss": loss_item})
-
-                #---------------------------------
-                'Optimizer step'
-
-                optimizer.step()
-
-            else:
-                mse_loss, _ = batch_loop(
-                    env, mini_batch, nav_agent, steps_in_episode, warmup=is_warmup
-                )
-
-                if torch.isnan(mse_loss).any():
-                    logger.error("NaN detected in the warmup loss. Aborting training.")
-
-                mse_mean = mse_loss.mean()
-
-                mse_mean.backward()
-                
-                if torch.all(nav_agent.mu_layer.weight.grad == 0):
-                    logger.warning("Gradients are zero for mu_layer!")
-
-                # Inspecting vanishing gradient
-                if sample_offset_idx % num_batches_till_eval == 0 and verbose:
-                    # Retrieve named parameters from the optimizer
-                    named_params = [
-                        (named_param_map[param], param)
-                        for group in optimizer.param_groups
-                        for param in group['params']
-                    ]
+                    for name, histogram in histograms.items():
+                        wandb.log({f"{name}/Histogram": wandb.Histogram(np_histogram=histogram)})
 
 
-                    # Iterate and calculate gradients as needed
-                    for name, param in named_params:
-                        if param.requires_grad and ('bias' not in name) and (param.grad is not None):
-                            if name == 'weight': name = 'concat_projector.weight'               
-                            grads = param.grad.detach().cpu()
-                            weights = param.detach().cpu()
+                # Iterate and calculate gradients as needed
+                for name, param in named_params:
+                    if param.requires_grad and ('bias' not in name) and (param.grad is not None):
+                        if name == 'weight': name = 'concat_projector.weight'               
+                        grads = param.grad.detach().cpu()
+                        weights = param.detach().cpu()
 
-                            dist_tracker.write_dist_parameters(grads, name, "Gradient", writer, epoch_id)
-                            dist_tracker.write_dist_parameters(weights, name, "Weights", writer, epoch_id)
+                        dist_tracker.write_dist_parameters(grads, name, "Gradient", writer, epoch_id)
+                        dist_tracker.write_dist_parameters(weights, name, "Weights", writer, epoch_id)
 
-                            if wandb_on:
-                                wandb.log({f"{name}/Gradient": wandb.Histogram(grads.numpy().flatten())})
-                                wandb.log({f"{name}/Weights": wandb.Histogram(weights.numpy().flatten())})
-                            elif visualize:
-                                dist_tracker.write_dist_histogram(
-                                    grads.numpy().flatten(),
-                                    name, 
-                                    'g', 
-                                    "Gradient Histogram", 
-                                    "Grad Value", 
-                                    "Frequency", 
-                                    writer, 
-                                    epoch_id
-                                )
-                                dist_tracker.write_dist_histogram(
-                                    weights.numpy().flatten(), 
-                                    name, 
-                                    'b', 
-                                    "Weights Histogram", 
-                                    "Weight Value", 
-                                    "Frequency", 
-                                    writer, 
-                                    epoch_id
-                                )
+                        if wandb_on:
+                            wandb.log({f"{name}/Gradient": wandb.Histogram(grads.numpy().flatten())})
+                            wandb.log({f"{name}/Weights": wandb.Histogram(weights.numpy().flatten())})
+                        elif visualize:
+                            dist_tracker.write_dist_histogram(
+                                grads.numpy().flatten(),
+                                name, 
+                                'g', 
+                                "Gradient Histogram", 
+                                "Grad Value", 
+                                "Frequency", 
+                                writer, 
+                                epoch_id
+                            )
+                            dist_tracker.write_dist_histogram(
+                                weights.numpy().flatten(), 
+                                name, 
+                                'b', 
+                                "Weights Histogram", 
+                                "Weight Value", 
+                                "Frequency", 
+                                writer, 
+                                epoch_id
+                            )
+            
+            if wandb_on:
+                loss_item = pg_loss.mean().item()
+                logger.info(f"Submitting train/pg_loss: {loss_item} to wandb")
+                wandb.log({"train/pg_loss": loss_item})
 
-                optimizer.step()
-                scheduler.step()
-                # logger.info(f"[Warmup] update at epoch/batch {epoch_id}/{batch_count}")
+            #---------------------------------
+            'Optimizer step'
+
+            optimizer.step()
 
             batch_count += 1
 
