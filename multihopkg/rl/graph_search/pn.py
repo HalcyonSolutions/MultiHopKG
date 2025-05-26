@@ -647,6 +647,82 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         return final_embedding
 
+    def reset(self, initial_states_info: torch.Tensor, answer_ent: List[int], query_ent: List[int] = None, warmup: bool = True) -> Observation:
+        """
+        Will reset the episode to the initial position
+        This will happen by grabbign the initial_states_info embeddings, concatenating them with the centroid and then passing them to the environment
+        Args:
+            - initial_state_info (torch.Tensor): In this implemntation sit is the initial_states_info
+            - answer_ent (List[int]): The answer entity for the current batch
+            - query_ent (List[int]): The relevant entities for the current batch
+        Returnd:
+            - postion (torch.Tensor): Position in the graph
+            - state (torch.Tensor): Aggregation of states visited so far summarized in a single vector per batch element.
+        """
+
+        # Sanity Check: Make sure we finilized previos epsiode correclty
+        if self.current_step_no != self.steps_in_episode and not(warmup):
+            raise RuntimeError(
+                "Mis-use of the environment. Episode step must've been set back to 0 before end."
+                " Maybe you did not end your episode correctly"
+            )
+        
+        device = self.path_encoder.parameters().__next__().device
+
+        if self.training: self.num_rollouts = self._num_rollouts
+        else: self.num_rollouts = 0
+
+        with torch.no_grad():
+            ## Values
+            # Local Alias: initial_states_info is just a name we stick to in order to comply with inheritance of Environment.
+            self.current_questions_emb = initial_states_info                                                                    # (batch_size, text_dim)
+            self.current_step_no = 0
+
+            # get the embeddings of the answer entities
+            self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent).detach()               # (batch_size, entity_dim)
+            self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device).detach()   # (batch_size, 1)
+
+            init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), query_ent).to(device)             # (batch_size, entity_dim)
+            self.current_position = init_emb.clone()                                                                            # (batch_size, entity_dim)
+
+
+        # Initialize Hidden State
+        # self.hidden_state = torch.zeros(self.path_encoder.num_layers, len(answer_ent), self.path_encoder.hidden_size).to(device)
+        # self.cell_state = torch.zeros(self.path_encoder.num_layers, len(answer_ent), self.path_encoder.hidden_size).to(device)
+
+        # dummy_action = torch.zeros((len(answer_ent), self.action_dim)).to(device)
+
+        # ! Inspecting projections (gradients variance is too high from the start)
+
+        self.q_projected = self.concat_projector(self.current_questions_emb)                                        # (batch_size, emb_dim)
+
+        if self.num_rollouts > 0:
+            # Expand the states to the number of rollouts
+            # (batch_size, emb_dim) -> (batch_size, num_rollouts, emb_dim)
+            self.q_projected = self.q_projected.unsqueeze(1).expand(-1, self.num_rollouts, -1)                      # (batch_size, num_rollouts, entity_dim + relation_dim)
+            self.current_questions_emb = self.current_questions_emb.unsqueeze(1).expand(-1, self.num_rollouts, -1)  # (batch_size, num_rollouts, text_dim)
+            self.current_position = self.current_position.unsqueeze(1).expand(-1, self.num_rollouts, -1)            # (batch_size, num_rollouts, entity_dim)
+            self.answer_embeddings = self.answer_embeddings.unsqueeze(1).expand(-1, self.num_rollouts, -1)          # (batch_size, num_rollouts, entity_dim)
+            self.answer_found = self.answer_found.unsqueeze(1).expand(-1, self.num_rollouts, -1)                    # (batch_size, num_rollouts, 1)
+            init_emb = init_emb.unsqueeze(1).expand(-1, self.num_rollouts, -1)                                      # (batch_size, num_rollouts, entity_dim)
+
+        projected_state = torch.cat(
+            [self.q_projected, init_emb], dim=-1
+        ) # (batch_size, emb_dim + entity_dim) or (batch_size, num_rollouts, emb_dim + entity_dim)
+
+        # projected_state = torch.cat(
+        #     [self.q_projected, dummy_action], dim=-1
+        # )
+
+        observation = Observation(
+            state=projected_state,
+            kge_cur_pos=self.current_position,
+            kge_prev_pos=torch.zeros_like(self.current_position.detach()),
+            kge_action=torch.zeros(self.action_dim),
+        )
+
+        return observation
+
     # TOREM: We need to test if this can replace forward for now.
     def step(self, actions: torch.Tensor) -> Tuple[Observation, torch.Tensor, torch.Tensor]:
         """
@@ -765,82 +841,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # )
 
         return W1, W2, W1Dropout, W2Dropout, path_encoder, residual_adapter
-
-    def reset(self, initial_states_info: torch.Tensor, answer_ent: List[int], query_ent: List[int] = None, warmup: bool = True) -> Observation:
-        """
-        Will reset the episode to the initial position
-        This will happen by grabbign the initial_states_info embeddings, concatenating them with the centroid and then passing them to the environment
-        Args:
-            - initial_state_info (torch.Tensor): In this implemntation sit is the initial_states_info
-            - answer_ent (List[int]): The answer entity for the current batch
-            - query_ent (List[int]): The relevant entities for the current batch
-        Returnd:
-            - postion (torch.Tensor): Position in the graph
-            - state (torch.Tensor): Aggregation of states visited so far summarized in a single vector per batch element.
-        """
-
-        # Sanity Check: Make sure we finilized previos epsiode correclty
-        if self.current_step_no != self.steps_in_episode and not(warmup):
-            raise RuntimeError(
-                "Mis-use of the environment. Episode step must've been set back to 0 before end."
-                " Maybe you did not end your episode correctly"
-            )
-        
-        device = self.path_encoder.parameters().__next__().device
-
-        if self.training: self.num_rollouts = self._num_rollouts
-        else: self.num_rollouts = 0
-
-        with torch.no_grad():
-            ## Values
-            # Local Alias: initial_states_info is just a name we stick to in order to comply with inheritance of Environment.
-            self.current_questions_emb = initial_states_info                                                                    # (batch_size, text_dim)
-            self.current_step_no = 0
-
-            # get the embeddings of the answer entities
-            self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent).detach()               # (batch_size, entity_dim)
-            self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device).detach()   # (batch_size, 1)
-
-            init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), query_ent).to(device)             # (batch_size, entity_dim)
-            self.current_position = init_emb.clone()                                                                            # (batch_size, entity_dim)
-
-
-        # Initialize Hidden State
-        # self.hidden_state = torch.zeros(self.path_encoder.num_layers, len(answer_ent), self.path_encoder.hidden_size).to(device)
-        # self.cell_state = torch.zeros(self.path_encoder.num_layers, len(answer_ent), self.path_encoder.hidden_size).to(device)
-
-        # dummy_action = torch.zeros((len(answer_ent), self.action_dim)).to(device)
-
-        # ! Inspecting projections (gradients variance is too high from the start)
-
-        self.q_projected = self.concat_projector(self.current_questions_emb)                                        # (batch_size, emb_dim)
-
-        if self.num_rollouts > 0:
-            # Expand the states to the number of rollouts
-            # (batch_size, emb_dim) -> (batch_size, num_rollouts, emb_dim)
-            self.q_projected = self.q_projected.unsqueeze(1).expand(-1, self.num_rollouts, -1)                      # (batch_size, num_rollouts, entity_dim + relation_dim)
-            self.current_questions_emb = self.current_questions_emb.unsqueeze(1).expand(-1, self.num_rollouts, -1)  # (batch_size, num_rollouts, text_dim)
-            self.current_position = self.current_position.unsqueeze(1).expand(-1, self.num_rollouts, -1)            # (batch_size, num_rollouts, entity_dim)
-            self.answer_embeddings = self.answer_embeddings.unsqueeze(1).expand(-1, self.num_rollouts, -1)          # (batch_size, num_rollouts, entity_dim)
-            self.answer_found = self.answer_found.unsqueeze(1).expand(-1, self.num_rollouts, -1)                    # (batch_size, num_rollouts, 1)
-            init_emb = init_emb.unsqueeze(1).expand(-1, self.num_rollouts, -1)                                      # (batch_size, num_rollouts, entity_dim)
-
-        projected_state = torch.cat(
-            [self.q_projected, init_emb], dim=-1
-        ) # (batch_size, emb_dim + entity_dim) or (batch_size, num_rollouts, emb_dim + entity_dim)
-
-        # projected_state = torch.cat(
-        #     [self.q_projected, dummy_action], dim=-1
-        # )
-
-        observation = Observation(
-            state=projected_state,
-            kge_cur_pos=self.current_position,
-            kge_prev_pos=torch.zeros_like(self.current_position.detach()),
-            kge_action=torch.zeros(self.action_dim),
-        )
-
-        return observation
+    
     def get_starting_embedding(self, start_emb_type: str, size: int) -> torch.Tensor:
         node_emb = self.knowledge_graph.get_starting_embedding(start_emb_type)
 
