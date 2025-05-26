@@ -155,11 +155,14 @@ def rollout(
     entropies = []
     kg_rewards = []
     eval_metrics = DefaultDict(list)
+    num_rollouts = env._num_rollouts if env.training else 0
 
     answer_tensor = get_embeddings_from_indices(
             env.knowledge_graph.entity_embedding,
             torch.tensor(answer_id, dtype=torch.int),
-    ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
+    ) # (batch, embedding_dim)
+
+    if num_rollouts > 0: answer_tensor = answer_tensor.unsqueeze(1).expand(-1, num_rollouts, -1) # Shape: (batch, num_rollouts, embedding_dim)
 
     # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
     observations = env.reset(
@@ -169,7 +172,6 @@ def rollout(
     )
 
     cur_state = observations.state
-    # Should be of shape (batch_size, 1, hidden_dim)
 
     # pn.initialize_path(kg) # TOREM: Unecessasry to ask pn to form it for us.
     states_so_far = []
@@ -191,12 +193,19 @@ def rollout(
         
         # Calculate how close we are
         kg_intrinsic_reward = env.knowledge_graph.absolute_difference(
-            observations.kge_cur_pos.unsqueeze(1),
+            observations.kge_cur_pos,
             answer_tensor,
-        ).norm(dim=-1)
+        ).norm(dim=-1, keepdim=True) # Shape: (batch_size, 1) or (batch_size, num_rollouts, 1)
+        
+        reward = kg_dones*kg_extrinsic_rewards - torch.logical_not(kg_dones)*kg_intrinsic_reward  # Merging positive environment rewards with negative intrinsic ones
 
-        # TODO: Ensure the that the model stays within range of answer, otherwise set kg_done back to false so intrinsic reward kicks back in.
-        kg_rewards.append(kg_dones*kg_extrinsic_rewards - torch.logical_not(kg_dones)*kg_intrinsic_reward) # Merging positive environment rewards with negative intrinsic ones
+        if num_rollouts > 0: 
+            kg_rewards.append(reward.mean(axis=1))  # (batch_size, num_rollouts, 1) -> (batch_size, 1)
+            
+            log_probs = log_probs.mean(axis=1)      # (batch_size, num_rollouts) -> (batch_size,)
+            entropy = entropy.mean(axis=1)          # (batch_size, num_rollouts) -> (batch_size,)
+        else: 
+            kg_rewards.append(reward)               # (batch_size, 1)
 
         ########################################
         # Log Stuff for across batch
@@ -418,7 +427,7 @@ def batch_loop(
     kg_rewards_t = (
         torch.stack(kg_rewards)
     ).permute(1,0,2) # Correcting to Shape: (batch_size, num_steps, reward_type)
-    kg_rewards_t = kg_rewards_t.squeeze(2) # Shape: (batch_size, num_steps)
+    kg_rewards_t = kg_rewards_t.squeeze(-1) # Shape: (batch_size, num_steps)
 
     #-------------------------------------------------------------------------
     'Discount and Merging of Rewards'
@@ -1229,6 +1238,7 @@ def main():
         relation2id=rel2id,
         ann_index_manager_ent=ann_index_manager_ent,
         ann_index_manager_rel=ann_index_manager_rel,
+        num_rollouts=args.num_rollouts,
         steps_in_episode=args.num_rollout_steps,
         trained_pca=None,
         graph_pca=None,

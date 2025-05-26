@@ -27,6 +27,8 @@ def get_args() -> argparse.Namespace:
                             'Not actually used during flexible translation (default: 12)') # TODO: Force load this value from the state_dict instead. 
     ap.add_argument('--rl_gamma', type=float, default=0.9, help='Discount factor for the reinforcement learning agent (default: 0.9)')
     ap.add_argument('--baseline', type=str, default='n/a', help='Baseline strategy for policy gradient (default: n/a)') # TODO: Check if this is still used. Answer: Passed to NavigationAgent, but not used in the current implementation.
+    #TODO: Add the warmup parameters here
+
 
     'Dropout Scheduling'
     ap.add_argument('--action_dropout_rate', type=float, default=0.1, help='Dropout rate for randomly masking out knowledge graph edges (default: 0.1)') # TODO: Check if this is still used. Answer: Passed to NavigationAgent, but not used in the current implementation.
@@ -37,12 +39,13 @@ def get_args() -> argparse.Namespace:
     'Training Duration & Rollout'
     ap.add_argument('--epochs',type=int,default=200, help='Total number of training epochs (default: 200)')
     ap.add_argument('--start_epoch', type=int, default=0, help='Epoch to start training instead of just observing (default: 0)') # TODO: Implement this.
+    ap.add_argument('--num_rollouts', type=int, default=5, help='Number simultaneous trajectories to sample from during training for each sample question (default: 1)')
     ap.add_argument('--num_rollout_steps', type=int, default=8, help='Maximum number of steps per questions (default: 8)')
 
     'Batch Settings'
     ap.add_argument('--batch_size', type=int, default=256, help='Training mini-batch size (default: 256)')
     ap.add_argument('--batch_size_dev', type=int, default=64, help='Evaluation mini-batch size (default: 64)')
-    ap.add_argument('--batches_b4_eval', type=int, default=100, help='Batches to train before first evaluation phase (default: 100)')
+    ap.add_argument('--batches_b4_eval', type=int, default=100, help='Batches to train before first evaluation phase (default: 100)') #TODO: Remove if unused.
     ap.add_argument('--num_batches_till_eval', type=int, default=15, help='Batches to train between evaluations (default: 15)')
 
     'Datasets & File Paths'
@@ -51,6 +54,8 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/freebaseqa_clean.json", help="Path to cached tokenized QA metadata JSON file")
     ap.add_argument('--force_data_prepro', '-f', action="store_true", help="Force re-processing of QA data, even if cache exists")
     ap.add_argument('--use_kge_question_embedding', '-kq', action="store_true", help="Use entity and relation embedding as the questions instead of textual question. Only valid for single-hop task. (default: False)")
+    #TODO: Add the override_split option here
+
 
     # KG Dataset
     ap.add_argument('--data_dir', type=str, default="./data/FB15k", help='Root directory for KG triples and metadata (default: ./data/FB15k)')

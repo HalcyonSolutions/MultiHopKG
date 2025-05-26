@@ -511,6 +511,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         trained_pca,
         graph_pca,
         graph_annotation: str,
+        num_rollouts: int = 0, # Number of trajectories to be used in the environment per question, 0 means 1 trajectory
         use_kge_question_embedding: bool = False,
         epsilon: float = 0.1, # For error margin in the distance, TODO: Must find a better value
     ):
@@ -530,6 +531,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.relation_dim = relation_dim
         self.ann_index_manager_ent = ann_index_manager_ent
         self.ann_index_manager_rel = ann_index_manager_rel
+        self._num_rollouts = num_rollouts  # Number of trajectories to be used in the environment per question
         self.steps_in_episode = steps_in_episode
         self.trained_pca = trained_pca
         self.graph_pca = graph_pca
@@ -663,8 +665,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.current_step_no += 1
 
         # Make sure action and current position are detached from computation graph
-        detached_actions = actions.detach()
-        detached_curpos = self.current_position.detach()
+        detached_actions = actions.detach()                 # (batch_size, action_dim) or (batch_size, num_rollouts, action_dim)
+        detached_curpos = self.current_position.detach()    # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
 
         assert isinstance(
             self.current_questions_emb, torch.Tensor
@@ -678,15 +680,15 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         self.current_position = self.knowledge_graph.flexible_forward(
             self.current_position, actions, 
-        )
+        ) # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
 
         # No gradients are calculated here
         with torch.no_grad():
-            diff = self.knowledge_graph.absolute_difference(self.answer_embeddings, self.current_position)
+            diff = self.knowledge_graph.absolute_difference(self.answer_embeddings, self.current_position) # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
             
-            found_ans = torch.norm(diff, dim=-1)[:, torch.newaxis] < self.epsilon
-            torch.logical_or(self.answer_found, found_ans, out=self.answer_found)
-            extrinsic_reward = found_ans.float()
+            found_ans = torch.norm(diff, dim=-1, keepdim=True) < self.epsilon   # (batch_size, 1) or (batch_size, num_rollouts, 1))
+            self.answer_found = torch.logical_or(self.answer_found, found_ans)  # (batch_size, 1) or (batch_size, num_rollouts, 1)
+            extrinsic_reward = found_ans.float()                                # (batch_size, 1) or (batch_size, num_rollouts, 1)
 
         # ! Approach 1: No restraint
 
@@ -703,7 +705,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         projected_state = torch.cat(
             [self.q_projected, self.current_position], dim=-1
-        )
+        ) # (batch_size, emb_dim + entity_dim) or (batch_size, num_rollouts, emb_dim + entity_dim)
 
         # # ! Approach 1: Normal Projection
         # concatenations = torch.cat(
@@ -810,18 +812,22 @@ class ITLGraphEnvironment(Environment, nn.Module):
         
         device = self.path_encoder.parameters().__next__().device
 
+        if self.training: self.num_rollouts = self._num_rollouts
+        else: self.num_rollouts = 0
+
         with torch.no_grad():
             ## Values
             # Local Alias: initial_states_info is just a name we stick to in order to comply with inheritance of Environment.
-            self.current_questions_emb = initial_states_info  # (batch_size, emb_dim)
+            self.current_questions_emb = initial_states_info                                                                    # (batch_size, text_dim)
             self.current_step_no = 0
 
             # get the embeddings of the answer entities
-            self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent).detach() # (batch_size, emb_dim)
-            self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device).detach() # (batch_size, 1)
+            self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent).detach()               # (batch_size, entity_dim)
+            self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device).detach()   # (batch_size, 1)
 
-            init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), query_ent).to(device) # (batch_size, emb_dim)
-            self.current_position = init_emb.clone()
+            init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), query_ent).to(device)             # (batch_size, entity_dim)
+            self.current_position = init_emb.clone()                                                                            # (batch_size, entity_dim)
+
 
         # Initialize Hidden State
         # self.hidden_state = torch.zeros(self.path_encoder.num_layers, len(answer_ent), self.path_encoder.hidden_size).to(device)
@@ -831,11 +837,21 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # ! Inspecting projections (gradients variance is too high from the start)
 
-        self.q_projected = self.concat_projector(self.current_questions_emb)
+        self.q_projected = self.concat_projector(self.current_questions_emb)                                        # (batch_size, emb_dim)
+
+        if self.num_rollouts > 0:
+            # Expand the states to the number of rollouts
+            # (batch_size, emb_dim) -> (batch_size, num_rollouts, emb_dim)
+            self.q_projected = self.q_projected.unsqueeze(1).expand(-1, self.num_rollouts, -1)                      # (batch_size, num_rollouts, entity_dim + relation_dim)
+            self.current_questions_emb = self.current_questions_emb.unsqueeze(1).expand(-1, self.num_rollouts, -1)  # (batch_size, num_rollouts, text_dim)
+            self.current_position = self.current_position.unsqueeze(1).expand(-1, self.num_rollouts, -1)            # (batch_size, num_rollouts, entity_dim)
+            self.answer_embeddings = self.answer_embeddings.unsqueeze(1).expand(-1, self.num_rollouts, -1)          # (batch_size, num_rollouts, entity_dim)
+            self.answer_found = self.answer_found.unsqueeze(1).expand(-1, self.num_rollouts, -1)                    # (batch_size, num_rollouts, 1)
+            init_emb = init_emb.unsqueeze(1).expand(-1, self.num_rollouts, -1)                                      # (batch_size, num_rollouts, entity_dim)
 
         projected_state = torch.cat(
             [self.q_projected, init_emb], dim=-1
-        )
+        ) # (batch_size, emb_dim + entity_dim) or (batch_size, num_rollouts, emb_dim + entity_dim)
 
         # projected_state = torch.cat(
         #     [self.q_projected, dummy_action], dim=-1
