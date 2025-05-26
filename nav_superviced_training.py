@@ -98,7 +98,7 @@ def initial_setup() -> Tuple[argparse.Namespace, PreTrainedTokenizer, PreTrained
 
     return args, question_tokenizer, answer_tokenizer, logger
 
-def supervise_models(
+def single_hop_supervision(
     nav_agent: ContinuousPolicyGradient,
     env: ITLGraphEnvironment,
     question_embeddings: torch.Tensor,
@@ -110,12 +110,6 @@ def supervise_models(
     sigma_scalar: float = 0.1,
     expected_sigma: float = 0.03, # best gueess so far 0.01
 ):
-    """
-    Warmup step to train Residual Adapter and Stochastic Policy using supervised targets:
-    - Adapter learns to map questions to relation embeddings.
-    - Policy learns to predict head→tail vector as continuous action.
-    """
-
     # === Get batch entities and relations ===
     head_ids = query_ent
     rel_ids = query_rel
@@ -146,16 +140,7 @@ def supervise_models(
     state = torch.cat([adapter_out, head_emb], dim=-1)
     _, _, _, mu, sigma = nav_agent(state)
 
-
-    # if env.knowledge_graph.model_name == "pRotatE":
-    #     mu = env.knowledge_graph.denormalize_embedding(mu)
-
-    #     mu_sine, mu_cos = torch.sin(mu), torch.cos(mu)
-    #     target_action_sine, target_action_cos = torch.sin(target_action), torch.cos(target_action)
-    #     policy_loss = nn.functional.mse_loss(mu_sine, target_action_sine) + nn.functional.mse_loss(mu_cos, target_action_cos)
-    # else:
     policy_loss = nn.functional.mse_loss(mu, target_action)
-
 
     # === Losses ===
     query_emb = torch.cat(
@@ -167,6 +152,137 @@ def supervise_models(
     #Note: Sigma might be unstabilizing the training, but it is not clear yet.
 
     return policy_loss + adapter_scalar * adapter_loss
+
+def multihop_supervision(
+    nav_agent: ContinuousPolicyGradient,
+    env: ITLGraphEnvironment,
+    question_embeddings: torch.Tensor,
+    query_ent: List[int],
+    query_rel: List[int],
+    answer_id: List[int],
+    steps_in_episode: int,
+    hops: int,
+    paths: List[List[int]],
+    adapter_scalar: float = 0.5,
+    sigma_scalar: float = 0.1,
+    expected_sigma: float = 0.03, # best gueess so far 0.01
+):
+
+    # TODO: Improve paths in dataloader
+    device = question_embeddings.device
+    paths = torch.tensor(paths, dtype=torch.int, device=device) # Shape: (batch, hops, path_length)
+
+    # === Reset env to update current position and projected question ===
+    obs = env.reset(question_embeddings, answer_id, query_ent=query_ent, warmup=True)
+    state = obs.state  # shape: (batch, state_dim)
+
+    # === Compute forward pass ===
+    adapter_out = env.q_projected  # shape: (batch, adapter_dim)
+    
+    # Initialize policy_loss on the right device
+    policy_loss = torch.tensor(0.0, device=device)
+    for step in range(hops):
+        # Get the path embeddings
+        path_ids = paths[:, step, :] # Shape: (batch, path_length)
+
+        tail_ids = path_ids[:,2]  # (batch,) - 3rd column is tail entity
+        tail_emb_step = get_embeddings_from_indices(
+            env.knowledge_graph.entity_embedding,
+            tail_ids,
+        ) # Shape: (batch, embedding_dim)
+
+        # Target action: vector from current to next entity
+        target_action = env.knowledge_graph.difference(obs.kge_cur_pos, tail_emb_step) # Ideal translation vector
+
+        # Forward policy
+        _, _, _, mu, sigma = nav_agent(state)
+        
+         # Step environment with target_action
+        obs, _, _ = env.step(target_action)
+        state = obs.state
+
+        # Accumulate loss
+        policy_loss += nn.functional.mse_loss(mu, target_action)
+        policy_loss += sigma_scalar * nn.functional.mse_loss(sigma, torch.full_like(sigma, expected_sigma))
+
+
+    # === Losses: Adapter Loss ===
+    # Head entity embeddings (query_ent: list of ints, batch size)
+    head_emb = get_embeddings_from_indices(
+        env.knowledge_graph.entity_embedding,
+        torch.tensor(query_ent, dtype=torch.int),
+    ) # Shape: (batch, embedding_dim)
+
+    rel_emb = get_embeddings_from_indices(
+        env.knowledge_graph.relation_embedding,
+        path_ids[:,1],
+    ) # Shape: (batch, embedding_dim)
+
+    query_emb = torch.cat(
+        [head_emb, rel_emb], dim=-1
+    )
+
+    adapter_loss = nn.functional.mse_loss(adapter_out, query_emb)
+
+    return policy_loss + adapter_scalar * adapter_loss
+
+def supervise_models(
+    nav_agent: ContinuousPolicyGradient,
+    env: ITLGraphEnvironment,
+    question_embeddings: torch.Tensor,
+    query_ent: List[int],
+    query_rel: List[int],
+    answer_id: List[int],
+    steps_in_episode: int,
+    hops: List[int] = None,
+    paths: List[List[int]] = None,
+    adapter_scalar: float = 0.5,
+    sigma_scalar: float = 0.1,
+    expected_sigma: float = 0.03, # best gueess so far 0.01
+):
+    """
+    Warmup step to train Residual Adapter and Stochastic Policy using supervised targets:
+    - Adapter learns to map questions to relation embeddings.
+    - Policy learns to predict head→tail vector as continuous action.
+    """
+    if hops is not None:
+        assert all(steps_in_episode >= h for h in hops), "All Hops values must be smaller than or equal to steps_in_episode"
+        assert all(h == hops[0] for h in hops), "All Hops values must be equal to the first value in hops"
+        assert paths is not None, "Paths should be provided when hops are specified."
+
+    assert env.knowledge_graph.model_name == "TransE", f"Unsupported KGE model: {env.knowledge_graph.model_name}. The currently supported model is TransE."
+
+    if all(h == 1 for h in hops) or hops is None:
+        # Single hop supervision
+        return single_hop_supervision(
+            nav_agent=nav_agent,
+            env=env,
+            question_embeddings=question_embeddings,
+            query_ent=query_ent,
+            query_rel=query_rel,
+            answer_id=answer_id,
+            steps_in_episode=steps_in_episode,
+            adapter_scalar=adapter_scalar,
+            sigma_scalar=sigma_scalar,
+            expected_sigma=expected_sigma,
+        )
+    
+    else:
+        # multi hop supervision
+        return multihop_supervision(
+            nav_agent=nav_agent,
+            env=env,
+            question_embeddings=question_embeddings,
+            query_ent=query_ent,
+            query_rel=query_rel,
+            answer_id=answer_id,
+            steps_in_episode=steps_in_episode,
+            hops=hops[0],  # Assuming hops is a list of equal values
+            paths=paths,
+            adapter_scalar=adapter_scalar,
+            sigma_scalar=sigma_scalar,
+            expected_sigma=expected_sigma,
+        )
 
 def rollout(
     # TODO: self.mdl should point to (policy network)
@@ -458,6 +574,8 @@ def batch_loop(
     query_ent = mini_batch["Query-Entity"].tolist()
     query_rel = mini_batch["Query-Relation"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
+    hops = mini_batch["Hops"].tolist() if "Hops" in mini_batch.columns else None
+    paths = mini_batch["Paths"].tolist() if "Paths" in mini_batch.columns else None
     if env.use_kge_question_embedding:
         question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
     else:
@@ -471,6 +589,8 @@ def batch_loop(
         query_ent=query_ent,
         query_rel=query_rel,
         answer_id=answer_id,
+        hops=hops,
+        paths=paths,
     )
     return loss, {}
 
