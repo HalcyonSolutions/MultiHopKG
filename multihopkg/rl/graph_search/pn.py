@@ -690,13 +690,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
             self.answer_found = torch.logical_or(self.answer_found, found_ans)  # (batch_size, 1) or (batch_size, num_rollouts, 1)
             extrinsic_reward = found_ans.float()                                # (batch_size, 1) or (batch_size, num_rollouts, 1)
 
-        # ! Approach 1: No restraint
-
-        # ! Approach 2: Restrain to neighborhood with Min and Max
-        # making sure the movement stays within the neighborhood limit
-        # self.current_position = torch.clamp(self.current_position,
-        #                     min=self.knowledge_graph.sun_model.entity_embedding.min(),
-        #                     max=self.knowledge_graph.sun_model.entity_embedding.max()) 
 
         ########################################
         # Projections
@@ -706,23 +699,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
         projected_state = torch.cat(
             [self.q_projected, self.current_position], dim=-1
         ) # (batch_size, emb_dim + entity_dim) or (batch_size, num_rollouts, emb_dim + entity_dim)
-
-        # # ! Approach 1: Normal Projection
-        # concatenations = torch.cat(
-        #     [self.current_questions_emb, self.current_position], dim=-1
-        # )
-
-        # projected_state = self.concat_projector(concatenations)
-
-        # ! Approach 2: Attention Fusion (Gradients are not moving, must recheck)
-        # projected_state = self.concat_projector(self.current_questions_emb, self.current_position)
-
-        # ! Approach 3: Normalization on the Projection (Reduces gradients variance, but still loses it.)
-        # projected_state = F.normalize(projected_state, p=2, dim=1)
-
-        # TODO: Think about this, we have a transformer so I dont think we need to do this.
-        # concatenations_w_sequence = concatenations.unsqueeze(1)
-        # cur_state, _ = self.path_encoder(concatenations)
 
         # Corresponding indices is a list of indices of the matched embeddings (batch_size, topk=1)
         observation = Observation(
@@ -771,16 +747,16 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         residual_adapter = ResidualAdapter(question_dim, entity_dim + relation_dim)
 
+        # State Variables for holding rollout information
+        # I might regret this
+        self.current_position = None
+
         # W1 = nn.LSTM(
         #     input_size=entity_dim + question_dim,
         #     hidden_size=history_dim,  # AFAIK equiv this output size
         #     num_layers=history_num_layers,
         #     batch_first=True,
         # )
-
-        # State Variables for holding rollout information
-        # I might regret this
-        self.current_position = None
 
         # W1 = AttentionFusion(
         #     semantic_dim=entity_dim + relation_dim,
@@ -857,24 +833,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
         #     [self.q_projected, dummy_action], dim=-1
         # )
 
-        # ! Approach 1: Normal Projection
-        # concatenations = torch.cat(
-        #     [self.current_questions_emb, init_emb], dim=-1
-        # )
-        # projected_state = self.concat_projector(concatenations)
-
-        # ! Approach 2: Attention Fusion (Gradients are not moving, must recheck)
-        # projected_state = self.concat_projector(self.current_questions_emb, init_emb)
-        
-        # ! Approach 3: Normalization on the Projection (Reduces gradients variance, but still loses it.)
-
-        # projected_state = F.normalize(projected_state, p=2, dim=1)
-
-        # NOTE: We were using path encoder here before and are not sure if removing is good idea.
-
-        # This was for when we were receiving sequences. I mean I gues we still are.
-        # projected_state = projected_concat
-
         observation = Observation(
             state=projected_state,
             kge_cur_pos=self.current_position,
@@ -913,12 +871,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         action_space = ((r_space, e_space), action_mask)
         return action_space
 
-
-# TODO: Implementn ann
-def run_ann(approximate_states: torch.Tensor) -> torch.Tensor:
-    raise NotImplementedError
-
-# ! Approach 2 for the TextualEmb + KGE Projections (Gradients are not moving, must recheck)
+# Eduin's code, not sure if it works
 class AttentionFusion(nn.Module):
     def __init__(self, text_dim, semantic_dim, fusion_dim):
         super(AttentionFusion, self).__init__()
