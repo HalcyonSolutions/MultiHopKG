@@ -529,6 +529,9 @@ def batch_loop(
     nav_agent: ContinuousPolicyGradient,
     steps_in_episode: int,
     warmup: bool = False,
+    adapter_scalar: float = 0.5,
+    sigma_scalar: float = 0.1,
+    expected_sigma: float = 0.03, # best gueess so far 0.01
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
     Executes a batch loop for training the navigation agent.
@@ -591,6 +594,9 @@ def batch_loop(
         answer_id=answer_id,
         hops=hops,
         paths=paths,
+        adapter_scalar=adapter_scalar,
+        sigma_scalar=sigma_scalar,
+        expected_sigma=expected_sigma,
     )
     return loss, {}
 
@@ -891,7 +897,11 @@ def train_nav_multihopkg(
     question_tokenizer: PreTrainedTokenizer,
     track_gradients: bool,
     num_batches_till_eval: int,
+    adapter_scalar: float,
+    sigma_scalar: float,
+    expected_sigma: float,
     wandb_on: bool,
+    timestamp: str,
 ):
     """
     Trains the navigation agent using reinforcement learning (RL) on a knowledge graph environment.
@@ -952,7 +962,6 @@ def train_nav_multihopkg(
         - The function ensures that the environment and models are in training mode during the process.
     """
     # TODO: Get the rollout working
-
     # Print Model Parameters + Perhaps some more information
     if verbose:
         print(
@@ -964,8 +973,8 @@ def train_nav_multihopkg(
         for name, param in env.named_parameters():
             if param.requires_grad: print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
 
-    local_time = time.localtime()
-    timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+    # local_time = time.localtime()
+    # timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
     writer = SummaryWriter(log_dir=f'runs/nav_sv/{env.knowledge_graph.model_name.lower()}/{timestamp}/')
 
     named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()))}
@@ -977,11 +986,11 @@ def train_nav_multihopkg(
         lr=learning_rate
     )
 
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer,
-        step_size=10000,
-        gamma=0.95,
-    )
+    # scheduler = torch.optim.lr_scheduler.StepLR(
+    #     optimizer,
+    #     step_size=10000,
+    #     gamma=0.95,
+    # )
 
     modules_to_log: List[nn.Module] = [nav_agent]
 
@@ -1025,11 +1034,15 @@ def train_nav_multihopkg(
             optimizer.zero_grad()
 
             mse_loss, _ = batch_loop(
-                env, mini_batch, nav_agent, steps_in_episode, warmup=is_warmup
+                env, mini_batch, nav_agent, steps_in_episode, warmup=is_warmup,
+                adapter_scalar=adapter_scalar,
+                sigma_scalar=sigma_scalar,
+                expected_sigma=expected_sigma,
             )
 
             if torch.isnan(mse_loss).any():
                 logger.error("NaN detected in the warmup loss. Aborting training.")
+                sys.exit()
 
             mse_mean = mse_loss.mean()
 
@@ -1037,6 +1050,8 @@ def train_nav_multihopkg(
             
             if torch.all(nav_agent.mu_layer.weight.grad == 0):
                 logger.warning("Gradients are zero for mu_layer!")
+                logger.error("Aborting training.")
+                sys.exit()
 
             # Inspecting vanishing gradient
             if sample_offset_idx % num_batches_till_eval == 0 and verbose:
@@ -1084,7 +1099,7 @@ def train_nav_multihopkg(
                             )
 
             optimizer.step()
-            scheduler.step()
+            # scheduler.step()
             # logger.info(f"[Warmup] update at epoch/batch {epoch_id}/{batch_count}")
 
             batch_count += 1
@@ -1189,6 +1204,26 @@ def main():
     args, question_tokenizer, answer_tokenizer, logger = initial_setup()
     global wandb_run
 
+    local_time = time.localtime()
+    timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+    
+    if args.wandb:
+        args.wr_name = f"{args.wandb_project_name}_{'supervised'}_{timestamp}"
+        logger.info(
+            f"🪄 Initializing Weights and Biases. Under project name {args.wandb_project_name} and run name {args.wr_name}"
+        )
+        wandb_run = wandb.init(
+            project=args.wandb_project_name,
+            name=args.wr_name,
+            config=vars(args),
+            notes=args.wr_notes,
+        )
+        for k, v in wandb.config.items():
+            setattr(args, k, v)
+
+        print(f"Run URL: {wandb_run.url}")
+        print(f"Args: {args}")
+
     if args.debug:
         logger.info("\033[1;33m Waiting for debugger to attach...\033[0m")
         debugpy.listen(("0.0.0.0", 42020))
@@ -1223,16 +1258,6 @@ def main():
 
     # TODO: Muybe ? (They use it themselves)
     # initialize_model_directory(args, args.seed)
-    if args.wandb:
-        logger.info(
-            f"🪄 Initializing Weights and Biases. Under project name {args.wandb_project_name} and run name {args.wr_name}"
-        )
-        wandb_run = wandb.init(
-            project=args.wandb_project_name,
-            name=args.wr_name,
-            config=vars(args),
-            notes=args.wr_notes,
-        )
 
     ########################################
     # Set the KG Environment
@@ -1385,7 +1410,11 @@ def main():
         question_tokenizer=question_tokenizer,
         track_gradients=args.track_gradients,
         num_batches_till_eval=args.num_batches_till_eval,
+        adapter_scalar=args.supervised_adapter_scalar,
+        sigma_scalar=args.supervised_sigma_scalar,
+        expected_sigma=args.supervised_expected_sigma,
         wandb_on=args.wandb,
+        timestamp=timestamp,
     )
 
     logger.info("Done with everything. Exiting...")

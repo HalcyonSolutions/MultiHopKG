@@ -763,6 +763,7 @@ def train_nav_multihopkg(
     track_gradients: bool,
     num_batches_till_eval: int,
     wandb_on: bool,
+    timestamp: str,
 ):
     """
     Trains the navigation agent using reinforcement learning (RL) on a knowledge graph environment.
@@ -835,8 +836,8 @@ def train_nav_multihopkg(
         for name, param in env.named_parameters():
             if param.requires_grad: print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
 
-    local_time = time.localtime()
-    timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+    # local_time = time.localtime()
+    # timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
     writer = SummaryWriter(log_dir=f'runs/nav/{env.knowledge_graph.model_name.lower()}/{timestamp}/')
 
     named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()))}
@@ -915,6 +916,7 @@ def train_nav_multihopkg(
             )
             if torch.isnan(pg_loss).any():
                 logger.error("NaN detected in the loss. Aborting training.")
+                sys.exit()
 
             # Logg the mean, std, min, max of the rewards
             reinforce_terms_mean = pg_loss.mean()
@@ -943,6 +945,8 @@ def train_nav_multihopkg(
 
             if torch.all(nav_agent.mu_layer.weight.grad == 0):
                 logger.warning("Gradients are zero for mu_layer!")
+                logger.error("Aborting training.")
+                sys.exit()
 
 
             # Inspecting vanishing gradient
@@ -1109,6 +1113,26 @@ def main():
     args, question_tokenizer, answer_tokenizer, logger = initial_setup()
     global wandb_run
 
+    local_time = time.localtime()
+    timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+    
+    if args.wandb:
+        args.wr_name = f"{args.wandb_project_name}_{'rl'}_{timestamp}"
+        logger.info(
+            f"🪄 Initializing Weights and Biases. Under project name {args.wandb_project_name} and run name {args.wr_name}"
+        )
+        wandb_run = wandb.init(
+            project=args.wandb_project_name,
+            name=args.wr_name,
+            config=vars(args),
+            notes=args.wr_notes,
+        )
+        for k, v in wandb.config.items():
+            setattr(args, k, v)
+
+        print(f"Run URL: {wandb_run.url}")
+        print(f"Args: {args}")
+
     if args.debug:
         logger.info("\033[1;33m Waiting for debugger to attach...\033[0m")
         debugpy.listen(("0.0.0.0", 42020))
@@ -1143,16 +1167,6 @@ def main():
 
     # TODO: Muybe ? (They use it themselves)
     # initialize_model_directory(args, args.seed)
-    if args.wandb:
-        logger.info(
-            f"🪄 Initializing Weights and Biases. Under project name {args.wandb_project_name} and run name {args.wr_name}"
-        )
-        wandb_run = wandb.init(
-            project=args.wandb_project_name,
-            name=args.wr_name,
-            config=vars(args),
-            notes=args.wr_notes,
-        )
 
     ########################################
     # Set the KG Environment
@@ -1307,6 +1321,7 @@ def main():
         track_gradients=args.track_gradients,
         num_batches_till_eval=args.num_batches_till_eval,
         wandb_on=args.wandb,
+        timestamp=timestamp,
     )
 
     logger.info("Done with everything. Exiting...")
