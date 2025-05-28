@@ -27,7 +27,11 @@ def get_args() -> argparse.Namespace:
                             'Not actually used during flexible translation (default: 12)') # TODO: Force load this value from the state_dict instead. 
     ap.add_argument('--rl_gamma', type=float, default=0.9, help='Discount factor for the reinforcement learning agent (default: 0.9)')
     ap.add_argument('--baseline', type=str, default='n/a', help='Baseline strategy for policy gradient (default: n/a)') # TODO: Check if this is still used. Answer: Passed to NavigationAgent, but not used in the current implementation.
-    #TODO: Add the warmup parameters here
+    
+    ap.add_argument('--supervised_adapter_scalar', default=0.5, type=float, help='Scalar for the supervised adapter loss (default: 0.0)') 
+    ap.add_argument('--supervised_sigma_scalar', default=0.1, type=float, help='Scalar for the supervised sigma loss (default: 0.1)')
+    ap.add_argument('--supervised_expected_sigma', default=0.1, type=float, help='Scalar for the supervised expected sigma value (default: 0.1)') 
+                    #TODO: Add the warmup parameters here
 
 
     'Dropout Scheduling'
