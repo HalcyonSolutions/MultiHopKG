@@ -1,6 +1,6 @@
 program: kge_launcher.py
 project: kinship-hinton
-method: bayes
+method: grid
 
 command:
   - python
@@ -15,7 +15,7 @@ parameters:
     value: train
 
   model:
-    value: RotatE
+    value: TransE
 
   dataset:
     value: KinshipHinton
@@ -24,47 +24,28 @@ parameters:
     value: 0
 
   seed:
-    value: 0
+    values: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
 
   batch_size:
-    distribution: q_log_uniform_values
-    q: 1
-    min: 1
-    max: 32
+    value: 18
 
   negative_sample_size:
-    distribution: q_uniform
-    q: 1
-    min: 1
-    max: 16
+    value: 14
 
   hidden_dim:
-  hidden_dim:
-    distribution: q_log_uniform_values
-    q: 1
-    min: 4
-    max: 16
+    value: 10
 
   gamma:
-    distribution: uniform
-    min: 0.5
-    max: 4.5
+    value: 3.0679463664224995
 
   alpha:
-    distribution: uniform
-    min: 0.1
-    max: 1.0
+    value: 0.467321526426271
 
   learning_rate:
-    distribution: log_uniform_values
-    min: 2e-5
-    max: 8e-4
+    value: 0.000507328572652022
 
   max_steps:
-    value: 50000
-
-  valid_steps:
-    value: 5000
+    value: 70000
 
   test_batch_size:
     value: 16
@@ -79,8 +60,7 @@ parameters:
     value: HITS@1  # Metric to save the best model
   
   saving_threshold:
-    value: 0.84  # Threshold for saving the best model
+    value: 0.85  # Threshold for saving the best model
 
-  # (Optional) Positional argument 16+
   additional_params:
     value: ""  # Empty unless you add extra flags like -de, -dr
