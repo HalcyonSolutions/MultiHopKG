@@ -133,11 +133,11 @@ def single_hop_supervision(
     # Note: target action is in radians if using pRotatE
 
     # === Reset env to update current position and projected question ===
-    _ = env.reset(question_embeddings, answer_id, query_ent=query_ent, warmup=True)
+    obs = env.reset(question_embeddings, answer_id, query_ent=query_ent, warmup=True)
 
     # === Compute forward pass ===
     adapter_out = env.q_projected
-    state = torch.cat([adapter_out, head_emb], dim=-1)
+    state = obs.state  # shape: (batch, state_dim)
     _, _, _, mu, sigma = nav_agent(state)
 
     policy_loss = nn.functional.mse_loss(mu, target_action)
@@ -1350,6 +1350,7 @@ def main():
         nav_start_emb_type=args.nav_start_emb_type,
         epsilon = args.nav_epsilon_error,
         use_kge_question_embedding=args.use_kge_question_embedding,
+        add_transition_state=args.add_transition_state
     ).to(args.device)
 
     # env.concat_projector.to(args.device)
@@ -1364,7 +1365,7 @@ def main():
         dim_action=dim_relation,
         dim_hidden=args.rnn_hidden,
         # dim_observation=args.history_dim,  # observation will be into history
-        dim_observation = 2*dim_entity + dim_relation,
+        dim_observation = 3*dim_entity + 2*dim_relation if args.add_transition_state else 2*dim_entity + dim_relation,
     ).to(args.device)
 
     # ======================================

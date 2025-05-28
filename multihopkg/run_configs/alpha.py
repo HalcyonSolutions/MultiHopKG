@@ -76,7 +76,8 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--nav_start_emb_type', type=str, default="centroid", help="Initial navigation point: 'centroid', 'random', or 'relevant'")
     ap.add_argument('--nav_epsilon_error', type=float, default=50.0, help="Allowable distance to consider the answer as 'reached' (default: 50.0)")
     ap.add_argument('--nav_epsilon_metric', type=str, default="l2", help="Distance metric for navigation: 'l1', 'l2', or 'deg' (default: l2)")
-    
+    ap.add_argument('-ts', '--add_transition_state', action='store_true', help="Include the past position, action, and current position into the state (default: False)")
+
     # RNN Settings
     ap.add_argument('--history_dim', type=int, default=768, metavar='H', help='Hidden size of action history LSTM encoder (default: 768)')
     ap.add_argument('--history_num_layers', type=int, default=3, metavar='L', help='Number of layers in action history LSTM encoder (default: 3)')

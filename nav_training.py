@@ -1260,6 +1260,7 @@ def main():
         nav_start_emb_type=args.nav_start_emb_type,
         epsilon = args.nav_epsilon_error,
         use_kge_question_embedding=args.use_kge_question_embedding,
+        add_transition_state=args.add_transition_state
     ).to(args.device)
 
     # env.concat_projector.to(args.device)
@@ -1274,7 +1275,7 @@ def main():
         dim_action=dim_relation,
         dim_hidden=args.rnn_hidden,
         # dim_observation=args.history_dim,  # observation will be into history
-        dim_observation=2*dim_entity + dim_entity,
+        dim_observation = 3*dim_entity + 2*dim_relation if args.add_transition_state else 2*dim_entity + dim_relation,
     ).to(args.device)
 
     # ======================================

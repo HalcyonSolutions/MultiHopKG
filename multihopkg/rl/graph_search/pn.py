@@ -55,6 +55,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         num_rollouts: int = 0, # Number of trajectories to be used in the environment per question, 0 means 1 trajectory
         use_kge_question_embedding: bool = False,
         epsilon: float = 0.1, # For error margin in the distance, TODO: Must find a better value
+        add_transition_state: bool = False, # If True, will include the transition state in the observation
     ):
         super(ITLGraphEnvironment, self).__init__()
         # Should be injected via information extracted from Knowledge Grap
@@ -132,6 +133,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.answer_embeddings = None  # This is the embeddings of the answer (batch_size, entity_dim)
         self.answer_found = None       # This is a flag to denote if the answer has been already been found (batch_size, 1)
         self.epsilon = epsilon                 # This is the error margin in the distance for finding the answer
+        self.add_transition_state = add_transition_state # If True, will include the observation triplet in the state
 
         # (self.W1, self.W2, self.W1Dropout, self.W2Dropout, self.path_encoder, self.concat_projector) = (
         # (self.concat_projector, self.W2, self.W1Dropout, self.W2Dropout, _) = (
@@ -247,9 +249,15 @@ class ITLGraphEnvironment(Environment, nn.Module):
             self.answer_found = self.answer_found.unsqueeze(1).expand(-1, self.num_rollouts, -1)                    # (batch_size, num_rollouts, 1)
             init_emb = init_emb.unsqueeze(1).expand(-1, self.num_rollouts, -1)                                      # (batch_size, num_rollouts, entity_dim)
 
-        projected_state = torch.cat(
-            [self.q_projected, init_emb], dim=-1
-        ) # (batch_size, emb_dim + entity_dim) or (batch_size, num_rollouts, emb_dim + entity_dim)
+        if self.add_transition_state:
+            actions = torch.zeros_like(init_emb).to(device)  # (batch_size, num_rollouts, entity_dim)
+            projected_state = torch.cat(
+                [self.q_projected, init_emb, actions, init_emb], dim=-1
+            ) # (batch_size, emb_dim + 2*entity_dim + action_dim) or (batch_size, num_rollouts, emb_dim + 2*entity_dim + action_dim)
+        else:
+            projected_state = torch.cat(
+                [self.q_projected, init_emb], dim=-1
+            ) # (batch_size, emb_dim + entity_dim) or (batch_size, num_rollouts, emb_dim + entity_dim)
 
         # projected_state = torch.cat(
         #     [self.q_projected, dummy_action], dim=-1
@@ -294,6 +302,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         ########################################
 
         # ! Restraining the movement to the neighborhood
+        prev_position = self.current_position.clone() # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
 
         self.current_position = self.knowledge_graph.flexible_forward(
             self.current_position, actions, 
@@ -312,10 +321,14 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # Projections
         ########################################
         # ! Inspecting projections (gradients variance is too high from the start)
-
-        projected_state = torch.cat(
-            [self.q_projected, self.current_position], dim=-1
-        ) # (batch_size, emb_dim + entity_dim) or (batch_size, num_rollouts, emb_dim + entity_dim)
+        if self.add_transition_state:
+            projected_state = torch.cat(
+                [self.q_projected, prev_position, actions, self.current_position], dim=-1 # query,
+            ) # (batch_size, emb_dim + 2*entity_dim + action_dim) or (batch_size, num_rollouts, emb_dim + 2*entity_dim + action_dim)
+        else:
+            projected_state = torch.cat(
+                [self.q_projected, self.current_position], dim=-1 # query,
+            ) # (batch_size, emb_dim + entity_dim) or (batch_size, num_rollouts, emb_dim + entity_dim)
 
         # Corresponding indices is a list of indices of the matched embeddings (batch_size, topk=1)
         observation = Observation(
