@@ -1,7 +1,13 @@
 import argparse
 import yaml
+import os
 
 def overload_parse_defaults_with_yaml(yaml_location:str, args: argparse.Namespace):
+    # check if the yaml file exists
+    if not os.path.exists(yaml_location):
+        print(f"Yaml file {yaml_location} does not exist, skipping yaml overload")
+        return args
+    
     with open(yaml_location, "r") as f:
         print(f"Trying to import the yaml file {yaml_location}")
         yaml_args = yaml.load(f, Loader=yaml.FullLoader)
