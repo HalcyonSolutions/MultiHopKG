@@ -1,0 +1,81 @@
+program: nav_training.py
+project: kinship-hinton-multihop-rl
+method: bayes
+
+command:
+  - ${env}
+  - python
+  - nav_training.py
+  - --preferred_config=""
+  - --seed=420
+  - --wandb
+  - --wr_notes=1-hop task - Navigation Agent for MultiHopKG with Reinforcement Learning
+  - --wandb_project=kinship-hinton-multihop-rl  # Your wandb project name
+
+metric:
+  name: valid/hits_1  # (higher is better)
+  goal: maximize  # Higher is better
+
+parameters:
+  learning_rate:
+    distribution: log_uniform_values
+    min: 1e-8
+    max: 1e-1
+  rl_gamma:
+    distribution: uniform
+    min: 0.9
+    max: 0.99
+  beta:
+    distribution: uniform
+    min: 0.01
+    max: 0.1
+    
+  supervised_adapter_scalar:
+    value: 0.0
+  supervised_sigma_scalar:
+    value: 0.0
+  supervised_expected_sigma:
+    value: 0.0
+
+  epochs:
+    distribution: q_log_uniform_values
+    q: 10
+    min: 10
+    max: 150  
+  num_rollouts:
+    values: [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
+  num_rollout_steps:
+    values: [1, 2, 3, 4]
+
+  batch_size:
+    distribution: q_log_uniform_values
+    q: 1
+    min: 1
+    max: 16
+  batch_size_dev:
+    value: 8
+
+  data_dir:
+    value: data/KinshipHinton
+  raw_QAData_path: 
+    value: data/KinshipHinton/kinship_hinton_qa_1hop.csv
+  cached_QAMetaData_path: 
+    value: ./.cache/itl/kinship_hinton_qa_1hop.json
+  node_data_path:
+    value: ""
+  node_data_key: 
+    value: ""
+  relationship_data_path: 
+    value: ""
+  relationship_data_key:
+    value: ""
+
+  model:
+    value: TransE
+  trained_model_path: 
+    value: models/TransE_KinshipHinton_dim12
+  
+  nav_start_emb_type:
+    value: relevant
+  nav_epsilon_error: 
+    value: 1.00

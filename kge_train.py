@@ -20,6 +20,8 @@ from torch.utils.data import DataLoader
 from multihopkg.exogenous.sun_models import KGEModel
 from multihopkg.utils.data_splitting import read_triple
 
+from multihopkg.utils.setup import set_seeds
+
 from multihopkg.datasets import TrainDataset
 from multihopkg.datasets import BidirectionalOneShotIterator
 
@@ -103,14 +105,6 @@ def override_config(args):
     args.hidden_dim = argparse_dict['hidden_dim']
     args.test_batch_size = argparse_dict['test_batch_size']
 
-def set_seed(seed):
-    """Set the random seed for reproducibility."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
 def save_model(model, optimizer, save_variable_list, args):
     '''
     Save the parameters of the model and the optimizer,
@@ -190,7 +184,7 @@ def main(args):
     # Initialize wandb
 
     if args.random_seed is not None:
-        set_seed(args.random_seed)
+        set_seeds(args.random_seed)
 
     if args.timestamp is None:
         local_time = time.localtime()

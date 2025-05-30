@@ -111,6 +111,14 @@ class KGEModel(nn.Module):
             "pRotatE": self.flexible_forward_protate,
         }
 
+        # Initialize the difference function dictionary once
+        self.difference_func = {
+            "TransE": self.difference_euclidean,
+            "RotatE": self.difference_euclidean,
+            "pRotatE": self.difference_phase,
+        }
+
+
         # Initialize the absolute difference function dictionary once
         self.absolute_difference_func = {
             "TransE": self.absolute_difference_euclidean,
@@ -753,6 +761,45 @@ class KGEModel(nn.Module):
     #-----------------------------------------------------------------------
     'Distance Calculations'
 
+    def difference_euclidean(self, head: torch.Tensor, tail: torch.Tensor) -> torch.Tensor:
+        return tail - head
+    
+    def difference_phase(self, head: torch.Tensor, tail: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate the difference between two vectors in phase space.
+        Does not denormalize the result (stays in radians).
+        
+        args:
+            head: torch.Tensor. Head embedding (in radians)
+            tail: torch.Tensor. Tail embedding (in radians)
+        
+        returns:
+            torch.Tensor. Difference between head and tail embeddings
+        """
+        head = self.denormalize_embedding(head)
+        tail = self.denormalize_embedding(tail)
+        return angular_difference(head, tail, smooth=torch.is_grad_enabled())
+    
+    def difference(self, head: torch.Tensor, tail: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate the difference between two vectors.
+        Works for both Euclidean and Rotational space.
+        Compatible with gradient calculation and none gradient calculation.
+        Does not denormalize the result.
+        
+        args:
+            head: torch.Tensor. Head embedding
+            tail: torch.Tensor. Tail embedding
+        
+        returns:
+            torch.Tensor. Difference between head and tail embeddings
+        """
+        
+        if self.model_name in self.difference_func:
+            return self.difference_func[self.model_name](head, tail)
+        else:
+            raise ValueError(f"Model {self.model_name} does not support difference calculation.")
+
     def absolute_difference_euclidean(self, head: torch.Tensor, tail: torch.Tensor) -> torch.Tensor:
         """
         Calculate the absolute difference between two vectors in Euclidean space.
@@ -782,7 +829,7 @@ class KGEModel(nn.Module):
         """
         head = self.denormalize_embedding(head)
         tail = self.denormalize_embedding(tail)
-        return angular_difference(head, tail, smooth=torch.is_grad_enabled()) # if gradient is required, use smooth normalization
+        return angular_difference(head, tail, smooth=torch.is_grad_enabled(), use_abs=True) # if gradient is required, use smooth normalization
         
     
     def absolute_difference(self, head: torch.Tensor, tail: torch.Tensor) -> torch.Tensor:

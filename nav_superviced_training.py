@@ -1,72 +1,83 @@
-#!/usr/bin/env python3
-
 """
- Copyright (c) 2018, salesforce.com, inc.
- For full license text, see the LICENSE file in the repo root or https://opensource.org/licenses/BSD-3-Clause
+This script serves as a counterpart to the `mlm_training.py` file.
 
- Experiment Portal.
+While `mlm_training.py` uses masked language modeling with three different embedding spaces 
+(Question Textual Embedding with BERT, KG Embedding with a KGE model, and Answer Embedding with BART) 
+to answer questions, this script focuses solely on using the KGE model for question answering.
+
+Optionally, it may also incorporate Question Textual Embedding with BERT alongside the KG Embedding 
+from the KGE model.
 """
+# TODO: Make the question embeddings optional
+# TODO: Improve dump_eval_metrics to support both `mlm_training.py` and `nav_training.py`
 
+#-------------------------------------------------------------------------------
+############################# Start of Imports #################################
+#-------------------------------------------------------------------------------
+
+# Standard Library Imports
 import argparse
-import json
-import logging
 import os
-from typing import List, Tuple, Dict, Any, DefaultDict
-import debugpy
 import sys
 import time
+import random
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-
-import torch
-from torch.utils.tensorboard import SummaryWriter 
-
+# Debugging and Development Tools
+import debugpy
+import logging
 import wandb
 from rich import traceback
-from torch import nn
+
+# Data Manipulation and Analysis
+import numpy as np
+import pandas as pd
+
 from tqdm import tqdm
+
+import torch
+from torch import nn
+from torch.utils.tensorboard import SummaryWriter 
 from transformers import (
     AutoModel,
     AutoTokenizer,
-    BartConfig,
-    BertModel,
     PreTrainedTokenizer,
 )
 
+# Typing
+from typing import List, Tuple, Dict, Any, DefaultDict
+
+# Personal Package Imports (multihopkg)
+# Utilities
 import multihopkg.data_utils as data_utils
 import multihopkg.utils_debug.distribution_tracker as dist_tracker
-from multihopkg.environments import Observation
-from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
-from multihopkg.models_language.classical import HunchBart, collate_token_ids_batch
-from multihopkg.logging import setup_logger
-from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
-from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
-from multihopkg.run_configs import alpha
-from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
-from multihopkg.utils.convenience import tensor_normalization
 from multihopkg.utils.setup import set_seeds
-from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
-from multihopkg.logs import torch_module_logging
 from multihopkg.utils.wandb import histogram_all_modules
 from multihopkg.utils_debug.dump_evals import dump_evaluation_metrics
 
+# Logging
+from multihopkg.logging import setup_logger
+from multihopkg.logs import torch_module_logging
 
-# PCA
-from sklearn.decomposition import PCA
+# Reinforcement Learning
+from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
+from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 
-import io
-from PIL import Image
+# Knowledge Graph Embeddings
+from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
+
+# Vector Search
+from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
+
+# Configuration
+from multihopkg.run_configs import alpha
+from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
+
+#-------------------------------------------------------------------------------
+############################## End of Imports ##################################
+#-------------------------------------------------------------------------------
 
 traceback.install()
 wandb_run = None
-
-
-def initialize_model_directory(args, random_seed=None):
-    # add model parameter info to model directory
-    # TODO: We might2ant our implementation of something like this later
-    raise NotImplementedError
 
 
 def initial_setup() -> Tuple[argparse.Namespace, PreTrainedTokenizer, PreTrainedTokenizer, logging.Logger]:
@@ -75,29 +86,336 @@ def initial_setup() -> Tuple[argparse.Namespace, PreTrainedTokenizer, PreTrained
     args = overload_parse_defaults_with_yaml(args.preferred_config, args)
 
     set_seeds(args.seed)
-    logger = setup_logger("__MLM__")
+    logger = setup_logger("__NAV_SV__")
 
     # Get Tokenizer
     question_tokenizer = AutoTokenizer.from_pretrained(args.question_tokenizer_name)
+
+    # TODO: Remove from Navigation code
     answer_tokenizer = AutoTokenizer.from_pretrained(args.answer_tokenizer_name)
 
     assert isinstance(args, argparse.Namespace)
 
     return args, question_tokenizer, answer_tokenizer, logger
 
+def single_hop_supervision(
+    nav_agent: ContinuousPolicyGradient,
+    env: ITLGraphEnvironment,
+    question_embeddings: torch.Tensor,
+    query_ent: List[int],
+    query_rel: List[int],
+    answer_id: List[int],
+    steps_in_episode: int,
+    adapter_scalar: float = 0.5,
+    sigma_scalar: float = 0.1,
+    expected_sigma: float = 0.03, # best gueess so far 0.01
+):
+    # === Get batch entities and relations ===
+    head_ids = query_ent
+    rel_ids = query_rel
 
-def prep_questions(questions: List[torch.Tensor], model: BertModel):
-    embedded_questions = model(questions)
-    return embedded_questions
+    head_emb = get_embeddings_from_indices(
+        env.knowledge_graph.entity_embedding,
+        torch.tensor(head_ids, dtype=torch.int),
+    ) # Shape: (batch, embedding_dim)
 
+    rel_emb  = get_embeddings_from_indices(
+        env.knowledge_graph.relation_embedding,
+        torch.tensor(rel_ids, dtype=torch.int),
+    ) # Shape: (batch, embedding_dim)
+
+    tail_emb = get_embeddings_from_indices(
+        env.knowledge_graph.entity_embedding,
+        torch.tensor(answer_id, dtype=torch.int),
+    ) # Shape: (batch, embedding_dim)
+
+    target_action = env.knowledge_graph.difference(head_emb, tail_emb) # Ideal translation vector
+    # Note: target action is in radians if using pRotatE
+
+    # === Reset env to update current position and projected question ===
+    obs = env.reset(question_embeddings, answer_id, query_ent=query_ent, warmup=True)
+
+    # === Compute forward pass ===
+    adapter_out = env.q_projected
+    state = obs.state  # shape: (batch, state_dim)
+    _, _, _, mu, sigma = nav_agent(state)
+
+    policy_loss = nn.functional.mse_loss(mu, target_action)
+
+    # === Losses ===
+    query_emb = torch.cat(
+        [head_emb, rel_emb], dim=-1
+    )
+    adapter_loss = nn.functional.mse_loss(adapter_out, query_emb)
+    policy_loss += sigma_scalar * nn.functional.mse_loss(sigma, torch.full_like(sigma, expected_sigma))
+
+    #Note: Sigma might be unstabilizing the training, but it is not clear yet.
+
+    return policy_loss + adapter_scalar * adapter_loss
+
+def multihop_supervision(
+    nav_agent: ContinuousPolicyGradient,
+    env: ITLGraphEnvironment,
+    question_embeddings: torch.Tensor,
+    query_ent: List[int],
+    query_rel: List[int],
+    answer_id: List[int],
+    steps_in_episode: int,
+    hops: int,
+    paths: List[List[int]],
+    adapter_scalar: float = 0.5,
+    sigma_scalar: float = 0.1,
+    expected_sigma: float = 0.03, # best gueess so far 0.01
+):
+
+    # TODO: Improve paths in dataloader
+    device = question_embeddings.device
+    paths = torch.tensor(paths, dtype=torch.int, device=device) # Shape: (batch, hops, path_length)
+
+    # === Reset env to update current position and projected question ===
+    obs = env.reset(question_embeddings, answer_id, query_ent=query_ent, warmup=True)
+    state = obs.state  # shape: (batch, state_dim)
+
+    # === Compute forward pass ===
+    adapter_out = env.q_projected  # shape: (batch, adapter_dim)
+    
+    # Initialize policy_loss on the right device
+    policy_loss = torch.tensor(0.0, device=device)
+    for step in range(hops):
+        # Get the path embeddings
+        path_ids = paths[:, step, :] # Shape: (batch, path_length)
+
+        tail_ids = path_ids[:,2]  # (batch,) - 3rd column is tail entity
+        tail_emb_step = get_embeddings_from_indices(
+            env.knowledge_graph.entity_embedding,
+            tail_ids,
+        ) # Shape: (batch, embedding_dim)
+
+        # Target action: vector from current to next entity
+        target_action = env.knowledge_graph.difference(obs.kge_cur_pos, tail_emb_step) # Ideal translation vector
+
+        # Forward policy
+        _, _, _, mu, sigma = nav_agent(state)
+        
+         # Step environment with target_action
+        obs, _, _ = env.step(target_action)
+        state = obs.state
+
+        # Accumulate loss
+        policy_loss += nn.functional.mse_loss(mu, target_action)
+        policy_loss += sigma_scalar * nn.functional.mse_loss(sigma, torch.full_like(sigma, expected_sigma))
+
+
+    # === Losses: Adapter Loss ===
+    # Head entity embeddings (query_ent: list of ints, batch size)
+    head_emb = get_embeddings_from_indices(
+        env.knowledge_graph.entity_embedding,
+        torch.tensor(query_ent, dtype=torch.int),
+    ) # Shape: (batch, embedding_dim)
+
+    rel_emb = get_embeddings_from_indices(
+        env.knowledge_graph.relation_embedding,
+        path_ids[:,1],
+    ) # Shape: (batch, embedding_dim)
+
+    query_emb = torch.cat(
+        [head_emb, rel_emb], dim=-1
+    )
+
+    adapter_loss = nn.functional.mse_loss(adapter_out, query_emb)
+
+    return policy_loss + adapter_scalar * adapter_loss
+
+def supervise_models(
+    nav_agent: ContinuousPolicyGradient,
+    env: ITLGraphEnvironment,
+    question_embeddings: torch.Tensor,
+    query_ent: List[int],
+    query_rel: List[int],
+    answer_id: List[int],
+    steps_in_episode: int,
+    hops: List[int] = None,
+    paths: List[List[int]] = None,
+    adapter_scalar: float = 0.5,
+    sigma_scalar: float = 0.1,
+    expected_sigma: float = 0.03, # best gueess so far 0.01
+):
+    """
+    Warmup step to train Residual Adapter and Stochastic Policy using supervised targets:
+    - Adapter learns to map questions to relation embeddings.
+    - Policy learns to predict head→tail vector as continuous action.
+    """
+    if hops is not None:
+        assert all(steps_in_episode >= h for h in hops), "All Hops values must be smaller than or equal to steps_in_episode"
+        assert all(h == hops[0] for h in hops), "All Hops values must be equal to the first value in hops"
+        assert paths is not None, "Paths should be provided when hops are specified."
+
+    assert env.knowledge_graph.model_name == "TransE", f"Unsupported KGE model: {env.knowledge_graph.model_name}. The currently supported model is TransE."
+
+    if all(h == 1 for h in hops) or hops is None:
+        # Single hop supervision
+        return single_hop_supervision(
+            nav_agent=nav_agent,
+            env=env,
+            question_embeddings=question_embeddings,
+            query_ent=query_ent,
+            query_rel=query_rel,
+            answer_id=answer_id,
+            steps_in_episode=steps_in_episode,
+            adapter_scalar=adapter_scalar,
+            sigma_scalar=sigma_scalar,
+            expected_sigma=expected_sigma,
+        )
+    
+    else:
+        # multi hop supervision
+        return multihop_supervision(
+            nav_agent=nav_agent,
+            env=env,
+            question_embeddings=question_embeddings,
+            query_ent=query_ent,
+            query_rel=query_rel,
+            answer_id=answer_id,
+            steps_in_episode=steps_in_episode,
+            hops=hops[0],  # Assuming hops is a list of equal values
+            paths=paths,
+            adapter_scalar=adapter_scalar,
+            sigma_scalar=sigma_scalar,
+            expected_sigma=expected_sigma,
+        )
+
+def rollout(
+    # TODO: self.mdl should point to (policy network)
+    steps_in_episode: int,
+    nav_agent: ContinuousPolicyGradient,
+    env: ITLGraphEnvironment,
+    questions_embeddings: torch.Tensor,
+    query_ent: List[int],
+    query_rel: List[int],
+    answer_id: List[int],
+    dev_mode: bool = False,
+) -> Tuple[List[torch.Tensor], List[torch.Tensor], Dict[str, Any]]:
+    """
+    Executes reinforcement learning (RL) episode rollouts in parallel for a given number of steps.
+    This function is the core of the training process, used by both `batch_loop` and `batch_loop_dev`.
+    
+    During the rollout:
+    - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions.
+    - Rewards are computed from the knowledge graph environment (KGE).
+    - Evaluation metrics are optionally collected in development mode (`dev_mode`).
+
+    Args:
+        steps_in_episode (int): 
+            The number of steps to execute in each episode.
+        nav_agent (ContinuousPolicyGradient): 
+            The policy network responsible for deciding actions based on the current state.
+        env (ITLGraphEnvironment): 
+            The knowledge graph environment that provides observations, rewards, and state transitions.
+        questions_embeddings (torch.Tensor): 
+            Pre-embedded representations of the questions to be answered. Shape: (batch_size, embedding_dim).
+        query_entity (List[int]): 
+            A list of relevant entities for each question, represented as lists of entity IDs.
+        query_rel (Listint]): 
+            A list of relevant relations for each question, represented as lists of relation IDs.
+        answer_id (List[int]): 
+            A list of IDs corresponding to the correct answer entities.
+        dev_mode (bool, optional): 
+            If `True`, additional evaluation metrics are collected for debugging or analysis. Defaults to `False`.
+
+    Returns:
+        - log_action_probs (List[torch.Tensor]): 
+            A list of log probabilities of the actions taken by the navigation agent at each step.
+        - kg_rewards (List[torch.Tensor]): 
+            A list of rewards computed by the knowledge graph environment for each step.
+        - eval_metrics (Dict[str, Any]): 
+            A dictionary of evaluation metrics collected during the rollout (only populated if `dev_mode=True`).
+    """
+
+    assert steps_in_episode > 0
+
+    ########################################
+    # Prepare lists to be returned
+    ########################################
+    log_action_probs = []
+    entropies = []
+    kg_rewards = []
+    eval_metrics = DefaultDict(list)
+
+    answer_tensor = get_embeddings_from_indices(
+            env.knowledge_graph.entity_embedding,
+            torch.tensor(answer_id, dtype=torch.int),
+    ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
+
+    # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
+    observations = env.reset(
+        questions_embeddings,
+        answer_ent = answer_id,
+        query_ent = query_ent
+    )
+
+    cur_state = observations.state
+    # Should be of shape (batch_size, 1, hidden_dim)
+
+    # pn.initialize_path(kg) # TOREM: Unecessasry to ask pn to form it for us.
+    states_so_far = []
+    for t in range(steps_in_episode):
+
+        # Ask the navigator to navigate, agent is presented state, not position
+        # State is meant to summrized path history.
+        sampled_actions, log_probs, entropy, _, _ = nav_agent(cur_state)
+
+        # TODO: Make sure we are gettign rewards from the environment.
+        observations, kg_extrinsic_rewards, kg_dones = env.step(sampled_actions)
+
+        cur_state = observations.state
+        # VISITED EMBEDDINGS IS THE ENCODER
+
+        ########################################
+        # Calculate the Reward
+        ########################################
+        
+        # Calculate how close we are
+        kg_intrinsic_reward = env.knowledge_graph.absolute_difference(
+            observations.kge_cur_pos.unsqueeze(1),
+            answer_tensor,
+        ).norm(dim=-1)
+
+        # TODO: Ensure the that the model stays within range of answer, otherwise set kg_done back to false so intrinsic reward kicks back in.
+        kg_rewards.append(kg_dones*kg_extrinsic_rewards - torch.logical_not(kg_dones)*kg_intrinsic_reward) # Merging positive environment rewards with negative intrinsic ones
+
+        ########################################
+        # Log Stuff for across batch
+        ########################################
+        # For now, we use states given by the path encoder and positions mostly for debugging
+        states_so_far.append(cur_state)
+        log_action_probs.append(log_probs)
+        entropies.append(entropy)
+
+        ########################################
+        # Stuff that we will only use for evaluation
+        ########################################
+        if dev_mode:
+            eval_metrics["sampled_actions"].append(sampled_actions.detach().cpu())
+            eval_metrics["kge_cur_pos"].append(observations.kge_cur_pos.detach().cpu())
+            eval_metrics["kge_prev_pos"].append(observations.kge_prev_pos.detach().cpu())
+            eval_metrics["kge_action"].append(observations.kge_action.detach().cpu())
+
+            'KGE Metrics'
+            eval_metrics["kg_extrinsic_rewards"].append(kg_extrinsic_rewards.detach().cpu())
+            eval_metrics["kg_intrinsic_reward"].append(kg_intrinsic_reward.detach().cpu())
+            eval_metrics["kg_dones"].append(kg_dones.detach().cpu())
+
+    if dev_mode:
+        eval_metrics = {k: torch.stack(v) for k, v in eval_metrics.items()}
+
+    # Return Rewards of Rollout as a Tensor
+    return log_action_probs, entropies, kg_rewards, eval_metrics
 
 def batch_loop_dev(
     env: ITLGraphEnvironment,
     mini_batch: pd.DataFrame,  # Perhaps change this ?
     nav_agent: ContinuousPolicyGradient,
-    hunch_llm: nn.Module,
     steps_in_episode: int,
-    pad_token_id: int,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
     Executes a batch loop for the development set to compute additional evaluation metrics.
@@ -106,7 +424,7 @@ def batch_loop_dev(
 
     During the batch loop:
     - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions inside `rollout`.
-    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE).
+    - Rewards are computed from the knowledge graph environment (KGE).
     - Evaluation metrics are collected for analysis.
 
     This function is found within `evaluate_training` calls upon `rollout`.
@@ -118,19 +436,14 @@ def batch_loop_dev(
             A batch of data containing questions, answers, relevant entities, and relations.
         nav_agent (ContinuousPolicyGradient): 
             The policy network responsible for deciding actions based on the current state.
-        hunch_llm (nn.Module): 
-            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
         steps_in_episode (int): 
             The number of steps to execute in each episode.
-        pad_token_id (int): 
-            The token ID used for padding sequences in the answer IDs.
 
     Returns:
         - `pg_loss` (torch.Tensor): 
             The policy gradient loss computed for the batch.
         - `eval_extras` (Dict[str, Any]): 
             A dictionary containing additional evaluation metrics collected during the batch loop.
-
 
     Notes:
         - This function is specifically designed for development and debugging purposes.
@@ -145,27 +458,20 @@ def batch_loop_dev(
 
     # Deconstruct the batch
     questions = mini_batch["Question"].tolist()
-    answers = mini_batch["Answer"].tolist()
     query_ent = mini_batch["Query-Entity"].tolist()
     query_rel = mini_batch["Query-Relation"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
-    # question_embeddings = env.get_llm_embeddings(questions, device)
     if env.use_kge_question_embedding:
         question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
     else:
         question_embeddings = env.get_llm_embeddings(questions, device)
 
-    answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
-    pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
-
     logger.warning(f"About to go into rollout")
-    log_probs, entropies, llm_rewards, kg_rewards, eval_extras = rollout(
+    log_probs, entropies, kg_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
-        hunch_llm,
         env,
         question_embeddings,
-        answer_ids_padded_tensor,
         query_ent = query_ent,
         query_rel = query_rel,
         answer_id = answer_id,
@@ -175,22 +481,6 @@ def batch_loop_dev(
     ########################################
     # Calculate Reinforce Objective
     ########################################
-    'LLM Rewards'
-
-    llm_rewards_t = (
-        torch.stack(llm_rewards)
-    ).permute(1,0,2)
-
-    assert not torch.isnan(llm_rewards_t).any(), "NaN detected in the llm rewards (batch_loop_dev). Aborting training."
-
-    # Get only masked, then mean
-    llm_rewards_t_unpacked = []
-    for i, reward_batch_element in enumerate(llm_rewards_t):
-        mask_for_element = pad_mask[i][1:].unsqueeze(0).repeat(steps_in_episode,1)
-        filtered_rewards = reward_batch_element[mask_for_element].reshape(steps_in_episode, -1)
-        mean_reward = torch.mean(filtered_rewards, dim=-1)
-        llm_rewards_t_unpacked.append(mean_reward)
-    llm_rewards_t = torch.stack(llm_rewards_t_unpacked)
 
     log_probs_t = torch.stack(log_probs).T
     entropies_t = torch.stack(entropies).T
@@ -198,8 +488,6 @@ def batch_loop_dev(
 
     assert not torch.isnan(log_probs_t).any(), "NaN detected in the log probs (batch_loop_dev). Aborting training."
 
-    # TODO: Check if this is not bad. 
-    llm_rewards_t = llm_rewards_t.expand_as(log_probs_t) # TOREM: This is a hack to make the shapes match
     #-------------------------------------------------------------------------
     'Knowledge Graph Environment Rewards'
 
@@ -215,16 +503,12 @@ def batch_loop_dev(
 
     # TODO: Check if a weight is needed for combining the rewards
     gamma = nav_agent.gamma
-    discounted_rewards = torch.zeros_like(llm_rewards_t).to(device) # Shape: (batch_size, num_steps)
-    G = torch.zeros_like(llm_rewards_t[:, 0]).to(device) # Shape: (batch_size, num_steps)
+    discounted_rewards = torch.zeros_like(kg_rewards_t).to(device) # Shape: (batch_size, num_steps)
+    G = torch.zeros_like(kg_rewards_t[:, 0]).to(device) # Shape: (batch_size, num_steps)
 
     for t in reversed(range(kg_rewards_t.size(1))):
-        G = (llm_rewards_t[:, t] + kg_rewards_t[:, t]) + gamma * G
+        G = kg_rewards_t[:, t] + gamma * G
         discounted_rewards[:, t] = G
-
-    # discounted_rewards[:,-1] = llm_rewards_t[:,-1] + kg_rewards_t[:,-1]
-    # for t in reversed(range(num_steps - 1)):
-    #     discounted_rewards[:,t] += gamma * (llm_rewards_t[:,t + 1] + kg_rewards_t[:,t + 1])
 
     # Sample-wise normalization of the rewards for stability
     # discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
@@ -243,23 +527,23 @@ def batch_loop(
     env: ITLGraphEnvironment,
     mini_batch: pd.DataFrame,  # Perhaps change this ?
     nav_agent: ContinuousPolicyGradient,
-    hunch_llm: nn.Module,
     steps_in_episode: int,
-    bos_token_id: int,
-    eos_token_id: int,
-    pad_token_id: int,
+    warmup: bool = False,
+    adapter_scalar: float = 0.5,
+    sigma_scalar: float = 0.1,
+    expected_sigma: float = 0.03, # best gueess so far 0.01
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
-    Executes a batch loop for training the navigation agent and language model.
+    Executes a batch loop for training the navigation agent.
     This function performs reinforcement learning (RL) rollouts for a batch of data
     and computes the policy gradient loss for training.
 
     During the batch loop:
     - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions inside `rollout`.
-    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE).
+    - Rewards are computed from the knowledge graph environment (KGE).
     - The policy gradient loss is calculated based on the rewards and log probabilities of actions.
 
-    This function is found within `train_multihokg` and calls upon `rollout`.
+    This function is found within `train_nav_multihopkg` and calls upon `rollout`.
 
     Args:
         env (ITLGraphEnvironment): 
@@ -268,16 +552,8 @@ def batch_loop(
             A batch of data containing questions, answers, relevant entities, and relations.
         nav_agent (ContinuousPolicyGradient): 
             The policy network responsible for deciding actions based on the current state.
-        hunch_llm (nn.Module): 
-            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
         steps_in_episode (int): 
             The number of steps to execute in each episode.
-        bos_token_id (int): 
-            The token ID representing the beginning of a sequence in the answer IDs.
-        eos_token_id (int): 
-            The token ID representing the end of a sequence in the answer IDs.
-        pad_token_id (int): 
-            The token ID used for padding sequences in the answer IDs.
 
     Returns:
         - `pg_loss` (torch.Tensor): 
@@ -298,97 +574,36 @@ def batch_loop(
 
     # Deconstruct the batch
     questions = mini_batch["Question"].tolist()
-    answers = mini_batch["Answer"].tolist()
     query_ent = mini_batch["Query-Entity"].tolist()
     query_rel = mini_batch["Query-Relation"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
-    # question_embeddings = env.get_llm_embeddings(questions, device)
+    hops = mini_batch["Hops"].tolist() if "Hops" in mini_batch.columns else None
+    paths = mini_batch["Paths"].tolist() if "Paths" in mini_batch.columns else None
     if env.use_kge_question_embedding:
         question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
     else:
         question_embeddings = env.get_llm_embeddings(questions, device)
-    
-    answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
-    pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
-    log_probs, entropies, llm_rewards, kg_rewards, eval_extras = rollout(
-        steps_in_episode,
-        nav_agent,
-        hunch_llm,
-        env,
-        question_embeddings,
-        answer_ids_padded_tensor,
-        query_ent = query_ent,
-        query_rel = query_rel,
-        answer_id = answer_id,
+    loss = supervise_models(
+        steps_in_episode=steps_in_episode,
+        nav_agent=nav_agent,
+        env=env,
+        question_embeddings=question_embeddings,
+        query_ent=query_ent,
+        query_rel=query_rel,
+        answer_id=answer_id,
+        hops=hops,
+        paths=paths,
+        adapter_scalar=adapter_scalar,
+        sigma_scalar=sigma_scalar,
+        expected_sigma=expected_sigma,
     )
-
-    ########################################
-    # Calculate Reinforce Objective
-    ########################################
-    logger.debug("About to calculate rewards")
-    #-------------------------------------------------------------------------
-    'LLM Rewards'
-
-    llm_rewards_t = (
-        torch.stack(llm_rewards)
-    ).permute(1,0,2)
-
-    # Get only masked, then mean
-    llm_rewards_t_unpacked = []
-    for i, reward_batch_element in enumerate(llm_rewards_t):
-        mask_for_element = pad_mask[i][1:].unsqueeze(0).repeat(steps_in_episode,1)
-        filtered_rewards = reward_batch_element[mask_for_element].reshape(steps_in_episode, -1)
-        mean_reward = torch.mean(filtered_rewards, dim=-1)
-        llm_rewards_t_unpacked.append(mean_reward)
-    llm_rewards_t = torch.stack(llm_rewards_t_unpacked)
-
-    log_probs_t = torch.stack(log_probs).T
-    entropies_t = torch.stack(entropies).T
-    num_steps = log_probs_t.shape[-1]
-
-    # TODO: Check if this is not bad. 
-    llm_rewards_t = llm_rewards_t.expand_as(log_probs_t) # TOREM: This is a hack to make the shapes match
-    #-------------------------------------------------------------------------
-    'Knowledge Graph Environment Rewards'
-
-    kg_rewards_t = (
-        torch.stack(kg_rewards)
-    ).permute(1,0,2) # Correcting to Shape: (batch_size, num_steps, reward_type)
-    kg_rewards_t = kg_rewards_t.squeeze(2) # Shape: (batch_size, num_steps)
-
-    #-------------------------------------------------------------------------
-    'Discount and Merging of Rewards'
-
-    # TODO: Check if a weight is needed for combining the rewards
-    gamma = nav_agent.gamma
-    discounted_rewards = torch.zeros_like(llm_rewards_t).to(device) # Shape: (batch_size, num_steps)
-    G = torch.zeros_like(llm_rewards_t[:, 0]).to(device) # Shape: (batch_size, num_steps)
-
-    for t in reversed(range(kg_rewards_t.size(1))):
-        G = (llm_rewards_t[:, t] + kg_rewards_t[:, t]) + gamma * G
-        discounted_rewards[:, t] = G
-
-    # discounted_rewards[:,-1] = llm_rewards_t[:,-1] + kg_rewards_t[:,-1]
-    # for t in reversed(range(num_steps - 1)):
-    #     discounted_rewards[:,t] += gamma * (llm_rewards_t[:,t + 1] + kg_rewards_t[:,t + 1])
-
-    # Sample-wise normalization of the rewards for stability
-    # discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
-    
-    #--------------------------------------------------------------------------
-    'Loss Calculation'
-
-    pg_loss = -(discounted_rewards * log_probs_t)  - nav_agent.beta * entropies_t # Have to negate it into order to do gradient ascent
-
-    return pg_loss, eval_extras
-
+    return loss, {}
 
 def evaluate_training(
     env: ITLGraphEnvironment,
     dev_df: pd.DataFrame,
     nav_agent: ContinuousPolicyGradient,
-    hunch_llm: nn.Module,
     steps_in_episode: int,
     batch_size_dev: int,
     batch_count: int,
@@ -396,17 +611,16 @@ def evaluate_training(
     visualize: bool,
     writer: SummaryWriter,
     question_tokenizer: PreTrainedTokenizer,
-    answer_tokenizer: PreTrainedTokenizer,
     wandb_on: bool,
     iteration: int,
     timestamp: str,
 ):
     """
-    Evaluates the performance of the navigation agent and language model on the development set.
+    Evaluates the performance of the navigation agent on the development set.
     This function computes evaluation metrics, logs results, and optionally visualizes the evaluation process.
 
     This function is found within `train_multihopkg` and is called periodically during training. 
-    This function calls upon `batch_loop_dev` and `dump_evaluation_metrics`.
+    It calls upon `batch_loop_dev` and `dump_evaluation_metrics`.
 
     Args:
         env (ITLGraphEnvironment): 
@@ -415,8 +629,6 @@ def evaluate_training(
             The development dataset containing questions, answers, relevant entities, and relations.
         nav_agent (ContinuousPolicyGradient): 
             The policy network responsible for deciding actions based on the current state.
-        hunch_llm (nn.Module): 
-            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
         steps_in_episode (int): 
             The number of steps to execute in each episode.
         batch_size_dev (int): 
@@ -431,8 +643,6 @@ def evaluate_training(
             A TensorBoard writer for logging metrics and visualizations.
         question_tokenizer (PreTrainedTokenizer): 
             The tokenizer used for processing questions.
-        answer_tokenizer (PreTrainedTokenizer): 
-            The tokenizer used for processing answers.
         wandb_on (bool): 
             If `True`, logs metrics to Weights & Biases (wandb).
         iteration (int): 
@@ -450,7 +660,6 @@ def evaluate_training(
     """
     num_batches = len(dev_df) // batch_size_dev
     nav_agent.eval()
-    hunch_llm.eval()
 
     env.eval()
     # env.question_embedding_module.eval()
@@ -490,19 +699,11 @@ def evaluate_training(
         current_evaluations["true_answer_id"] = mini_batch["Answer-Entity"]
 
         # Get the Metrics
-        bos_token_id = answer_tokenizer.bos_token_id
-        eos_token_id = answer_tokenizer.eos_token_id
-        pad_token_id = answer_tokenizer.pad_token_id
-        if bos_token_id is None or eos_token_id is None or pad_token_id is None:
-            raise ValueError("Assumptions Wrong. The answer_tokenizer must have a bos_token_id, eos_token_id and pad_token_id")
-        
         pg_loss, eval_extras = batch_loop_dev(
             env,
             mini_batch,
             nav_agent,
-            hunch_llm,
             steps_in_episode,
-            pad_token_id,
         )
 
         'Extract all the variables from eval_extras'
@@ -518,16 +719,9 @@ def evaluate_training(
         # a sample of batches and dump its results
         ########################################
         if verbose and logger:
-            graph_annotation = []
-            if env.entity2title:
-                for i0 in range(len(env.graph_annotation)):
-                    if env.graph_annotation[i0] in env.entity2title.keys():
-                        graph_annotation.append(env.entity2title[env.graph_annotation[i0]])
-                    else:
-                        graph_annotation.append("")
 
             # eval_extras has variables that we need
-            just_dump_it_here = f"./logs/mlm_{env.knowledge_graph.model_name.lower()}_{timestamp}_evaluation_dumps.log"
+            just_dump_it_here = f"./logs/nav_sv_{env.knowledge_graph.model_name.lower()}_{timestamp}_evaluation_dumps.log"
 
             answer_id = current_evaluations["true_answer_id"].tolist()
 
@@ -543,7 +737,7 @@ def evaluate_training(
                 vector_entity_searcher=env.ann_index_manager_ent,															 
                 vector_rel_searcher=env.ann_index_manager_rel,
                 question_tokenizer=question_tokenizer,
-                answer_tokenizer=answer_tokenizer,
+                answer_tokenizer=None, # TODO: Ensure this an optional parameter
                 answer_kge_tensor=answer_kge_tensor,
                 id2entity=env.id2entity,					   
                 id2relations=env.id2relation,
@@ -557,7 +751,7 @@ def evaluate_training(
                 writer=writer,						  
                 wandb_on=wandb_on,
                 logger=logger,
-                llm_answered_enabled=True
+                llm_answered_enabled=False
             )
             logger.warning(f"We just left dump_evaluation_metrics")
 
@@ -568,43 +762,128 @@ def evaluate_training(
 
             if not mini_batch._is_view: # if a copy was created, delete after usage
                 del mini_batch
+
+def test_nav_multihopkg(
+    env: ITLGraphEnvironment,
+    nav_agent: ContinuousPolicyGradient,
+    test_data: pd.DataFrame,
+    steps_in_episode: int,
+    batch_size_test: int,
+    verbose: bool,
+    # max_entities: int = None,
+    max_entities: int = 50, # TODO: Make this a parameter in alpha, however using this compromises the MR metric. In literature, 50 is used.
+    desc: str = "Testing Batches",
+):
+    # Set in testing mode
+    nav_agent.eval()
+    env.eval()
+
+    device = next(nav_agent.parameters()).device
+
+    hits_1 = []
+    hits_3 = []
+    hits_10 = []
+    distance = []
+    mr = []
+    mrr = []
+
+    num_entities = env.knowledge_graph.entity_embedding.size(0) # considering the whole graph
+
+    if max_entities is None:
+        max_entities = num_entities
+    elif max_entities > num_entities:
+        max_entities = num_entities
+
+    with torch.no_grad():
+        for sample_offset_idx in tqdm(range(0, len(test_data), batch_size_test), desc=desc, leave=False):
+            mini_batch = test_data[sample_offset_idx : sample_offset_idx + batch_size_test] 
             
+            # Deconstruct the batch
+            questions = mini_batch["Question"].tolist()
+            query_ent = mini_batch["Query-Entity"].tolist()
+            query_rel = mini_batch["Query-Relation"].tolist()
+            answer_id = mini_batch["Answer-Entity"].tolist()
+            if env.use_kge_question_embedding:
+                question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
+            else:
+                question_embeddings = env.get_llm_embeddings(questions, device)
 
+            answer_tensor = get_embeddings_from_indices(
+                    env.knowledge_graph.entity_embedding,
+                    torch.tensor(answer_id, dtype=torch.int),
+            ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
 
+            # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
+            observations = env.reset(
+                question_embeddings,
+                answer_ent = answer_id,
+                query_ent = query_ent
+            )
 
-    ########################################
-    # Average out all metrics across batches
-    # The dump to wandb
-    ########################################
-    """
-    for k, v in batch_cumulative_metrics.items():
-        metric_to_report = 0
-        if isinstance(v[0],torch.Tensor):
-            metric_to_report = torch.stack(v).mean()
-        elif isinstance(v[0], int) or isinstance(v[0], float):
-            metric_to_report = v[0]
-        else:
-            raise ValueError(f"The metric to report is not a tensor or int but rather {type(v[0])}")
+            cur_state = observations.state
 
-        if wandb_run is not None:
-            wandb.log({k: metric_to_report})
-        logger.debug(f"Metric '{k}' has value {metric_to_report}")
+            answer_ids_tensors = torch.tensor(answer_id).unsqueeze(1)
+            for t in range(steps_in_episode):
+                sampled_actions, _, _, _, _ = nav_agent(cur_state)
+                observations, _, _ = env.step(sampled_actions)
+                cur_state = observations.state
 
+            # TODO: Evaluate at every step,
+            # current evaluation is at the end of the episode
 
-    nav_agent.train()
-    hunch_llm.train()
-    env.train()
-    dev_mode = False
-    logger.info("Done with Evaluation")
-    """
-    # TODO: Implement this
+            kg_intrinsic_reward = env.knowledge_graph.absolute_difference(
+                observations.kge_cur_pos.unsqueeze(1),
+                answer_tensor,
+            ).norm(dim=-1).cpu()
 
-def train_multihopkg(
+            _, entity_indices = env.ann_index_manager_ent.search(observations.kge_cur_pos.detach().cpu(), max_entities)
+
+            results = (entity_indices == answer_ids_tensors)
+            hits_1.append(results[:, :1].any(dim=-1))
+            hits_3.append(results[:, :3].any(dim=-1))
+            hits_10.append(results[:, :10].any(dim=-1))
+
+            ranks = torch.full((answer_tensor.size(0),), num_entities + 1, dtype=torch.float) # In case we don't find anything, make num_entities + 1 the default rank (pessimitic assumption), using max_entities + 1 is considered too optimistic
+
+            row_idx, col_idx = torch.nonzero(results, as_tuple=True)                          # get the indices of the found answers, if any
+            ranks[row_idx] = col_idx.float() + 1                                              # Only update ranks where answers are found, otherwise keep the default
+
+            mr.append(ranks)
+            mrr.append((1.0 / ranks))        
+
+            distance.append(kg_intrinsic_reward)
+
+            del entity_indices
+            del results
+
+    hits_1 = torch.cat(hits_1).float().mean().item()
+    hits_3 = torch.cat(hits_3).float().mean().item()
+    hits_10 = torch.cat(hits_10).float().mean().item()
+    mr = torch.cat(mr).float().mean().item()
+    mrr = torch.cat(mrr).float().mean().item()
+    distance = torch.cat(distance).float().mean().item()
+
+    if verbose:
+        print(f"Test Results:")
+        print(f"Test Data Size: {len(test_data)}")
+        print(f"Hits@1: {hits_1:.4f}, Hits@3: {hits_3:.4f}, Hits@10: {hits_10:.4f}")
+        print(f"Mean Rank: {mr:.4f}, Mean Reciprocal Rank: {mrr:.4f}")
+        print(f"Mean Distance to Answer: {distance:.4f}")
+
+    return {
+        "hits_1": hits_1,
+        "hits_3": hits_3,
+        "hits_10": hits_10,
+        "mean_rank": mr,
+        "mean_reciprocal_rank": mrr,
+        "distance": distance,
+    }
+
+def train_nav_multihopkg(
     batch_size: int,
     batch_size_dev: int,
     epochs: int,
     nav_agent: ContinuousPolicyGradient,
-    hunch_llm: nn.Module,
     learning_rate: float,
     steps_in_episode: int,
     env: ITLGraphEnvironment,
@@ -616,18 +895,21 @@ def train_multihopkg(
     verbose: bool,
     visualize: bool,
     question_tokenizer: PreTrainedTokenizer,
-    answer_tokenizer: PreTrainedTokenizer,
     track_gradients: bool,
     num_batches_till_eval: int,
+    adapter_scalar: float,
+    sigma_scalar: float,
+    expected_sigma: float,
     wandb_on: bool,
+    timestamp: str,
 ):
     """
-    Trains the navigation agent and language model using reinforcement learning (RL) on a knowledge graph environment.
+    Trains the navigation agent using reinforcement learning (RL) on a knowledge graph environment.
     This function performs training over multiple epochs and evaluates the model periodically on a development set.
 
     During training:
     - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions in `rollout`.
-    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE) in `batch_loop`.
+    - Rewards are computed from the knowledge graph environment (KGE) in `batch_loop`.
     - The policy gradient loss is calculated and used to update the model parameters.
     - Evaluation is performed periodically using the `evaluate_training` function.
 
@@ -643,8 +925,6 @@ def train_multihopkg(
             The total number of epochs to train the model.
         nav_agent (ContinuousPolicyGradient): 
             The policy network responsible for deciding actions based on the current state.
-        hunch_llm (nn.Module): 
-            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
         learning_rate (float): 
             The learning rate for the optimizer.
         steps_in_episode (int): 
@@ -665,8 +945,6 @@ def train_multihopkg(
             If `True`, visualizations of gradients and weights histograms are tracked along with navigation movements.
         question_tokenizer (PreTrainedTokenizer): 
             The tokenizer used for processing questions.
-        answer_tokenizer (PreTrainedTokenizer): 
-            The tokenizer used for processing answers. Note: Not the same as the question tokenizer.
         track_gradients (bool): 
             If `True`, tracks and logs gradient information for debugging.
         num_batches_till_eval (int): 
@@ -678,13 +956,12 @@ def train_multihopkg(
         None
 
     Notes:
-        - The function uses reinforcement learning to train the navigation agent and language model.
+        - The function uses reinforcement learning to train the navigation agent.
         - Periodic evaluation is performed using the `evaluate_training` function.
         - Metrics and visualizations are logged to TensorBoard and optionally to wandb.
         - The function ensures that the environment and models are in training mode during the process.
     """
     # TODO: Get the rollout working
-
     # Print Model Parameters + Perhaps some more information
     if verbose:
         print(
@@ -696,40 +973,41 @@ def train_multihopkg(
         for name, param in env.named_parameters():
             if param.requires_grad: print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
 
-    local_time = time.localtime()
-    timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
-    writer = SummaryWriter(log_dir=f'runs/mlm/{env.knowledge_graph.model_name.lower()}/{timestamp}/')
+    # local_time = time.localtime()
+    # timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+    writer = SummaryWriter(log_dir=f'runs/nav_sv/{env.knowledge_graph.model_name.lower()}/{timestamp}/')
 
-    named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()) + list(hunch_llm.named_parameters()))}
+    named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()))}
     optimizer = torch.optim.Adam(  # type: ignore
         filter(
             lambda p: p.requires_grad,
-            list(env.concat_projector.parameters()) + list(nav_agent.parameters()) + list(hunch_llm.embedding_translator.parameters())
+            list(env.concat_projector.parameters()) + list(nav_agent.parameters())
         ),
         lr=learning_rate
     )
+
+    # scheduler = torch.optim.lr_scheduler.StepLR(
+    #     optimizer,
+    #     step_size=10000,
+    #     gamma=0.95,
+    # )
 
     modules_to_log: List[nn.Module] = [nav_agent]
 
     # Variable to pass for logging
     batch_count = 0
-    bos_token_id = answer_tokenizer.bos_token_id
-    eos_token_id = answer_tokenizer.eos_token_id
-    pad_token_id = answer_tokenizer.pad_token_id
-    if bos_token_id is None or eos_token_id is None or pad_token_id is None:
-        raise ValueError("Assumptions Wrong. The answer_tokenize must have a bos_token_id, eos_token_id and pad_token_id")
 
     # Replacement for the hooks
     if track_gradients:
         grad_logger = torch_module_logging.ModuleSupervisor({
             "navigation_agent" : nav_agent, 
-            "hunch_llm" : hunch_llm
         })
 
     ########################################
     # Epoch Loop
     ########################################
     for epoch_id in tqdm(range(epochs), desc="Epoch"):
+        is_warmup = epoch_id < start_epoch
 
         logger.info("Epoch {}".format(epoch_id))
         # TODO: Perhaps evaluate the epochs?
@@ -749,69 +1027,31 @@ def train_multihopkg(
             )  # For the lsp to give me a break
 
             ########################################
-            # Evaluation
-            ########################################
-            'For debugging purposes, comment back in if needed'
-            # if batch_count % mbatches_b4_eval == 0:
-            #     evaluate_training(
-            #         env,
-            #         dev_df,
-            #         nav_agent,
-            #         hunch_llm,
-            #         steps_in_episode,
-            #         batch_size_dev,
-            #         batch_count,
-            #         verbose,
-            #         visualize,
-            #         writer,
-            #         question_tokenizer,
-            #         answer_tokenizer,
-            #         wandb_on,
-            #         iteration = epoch_id * (len(train_data) // batch_size // mbatches_b4_eval) + (batch_count // mbatches_b4_eval),
-            #         timestamp = timestamp,
-            #     )
-
-            ########################################
             # Training
             ########################################
             'Forward pass'
 
             optimizer.zero_grad()
-            pg_loss, _ = batch_loop(
-                env, mini_batch, nav_agent, hunch_llm, steps_in_episode, bos_token_id, eos_token_id, pad_token_id
+
+            mse_loss, _ = batch_loop(
+                env, mini_batch, nav_agent, steps_in_episode, warmup=is_warmup,
+                adapter_scalar=adapter_scalar,
+                sigma_scalar=sigma_scalar,
+                expected_sigma=expected_sigma,
             )
 
-            if torch.isnan(pg_loss).any():
-                logger.error("NaN detected in the loss. Aborting training.")
+            if torch.isnan(mse_loss).any():
+                logger.error("NaN detected in the warmup loss. Aborting training.")
+                sys.exit()
 
-            # Logg the mean, std, min, max of the rewards
-            reinforce_terms_mean = pg_loss.mean()
-            reinforce_terms_mean_item = reinforce_terms_mean.item()
-            reinforce_terms_std_item = pg_loss.std().item()
-            reinforce_terms_min_item = pg_loss.min().item()
-            reinforce_terms_max_item = pg_loss.max().item()
-            logger.debug(f"Reinforce terms mean: {reinforce_terms_mean_item}, std: {reinforce_terms_std_item}, min: {reinforce_terms_min_item}, max: {reinforce_terms_max_item}")
+            mse_mean = mse_loss.mean()
 
-            # TODO: Uncomment and try: (but comment out the normalization in batch_loop and bacth_loop_dev)
-            # pg_loss = tensor_normalization(pg_loss)
-
-            #---------------------------------
-            'Backward pass'
-            logger.debug("Bout to go backwords")
-            reinforce_terms_mean.backward()
+            mse_mean.backward()
             
-            #---------------------------------
-            'Gradient Tracking'
-
-            if sample_offset_idx == 0:
-
-                # Ask for the DAG to be dumped
-                if track_gradients:
-                    grad_logger.dump_visual_dag(destination_path=f"./figures/grads/dag_{epoch_id:02d}.png", figsize=(10, 100)) # type: ignore
-
             if torch.all(nav_agent.mu_layer.weight.grad == 0):
                 logger.warning("Gradients are zero for mu_layer!")
-
+                logger.error("Aborting training.")
+                sys.exit()
 
             # Inspecting vanishing gradient
             if sample_offset_idx % num_batches_till_eval == 0 and verbose:
@@ -821,13 +1061,6 @@ def train_multihopkg(
                     for group in optimizer.param_groups
                     for param in group['params']
                 ]
-
-                # Wandb hisotram of modules
-                histograms = histogram_all_modules(modules_to_log, num_buckets=20)
-                # Report the histograms to wandb
-                if wandb_on:
-                    for name, histogram in histograms.items():
-                        wandb.log({f"{name}/Histogram": wandb.Histogram(np_histogram=histogram)})
 
 
                 # Iterate and calculate gradients as needed
@@ -864,233 +1097,62 @@ def train_multihopkg(
                                 writer, 
                                 epoch_id
                             )
-            
-            if wandb_on:
-                loss_item = pg_loss.mean().item()
-                logger.info(f"Submitting train/pg_loss: {loss_item} to wandb")
-                wandb.log({"train/pg_loss": loss_item})
-
-            #---------------------------------
-            'Optimizer step'
 
             optimizer.step()
+            # scheduler.step()
+            # logger.info(f"[Warmup] update at epoch/batch {epoch_id}/{batch_count}")
 
             batch_count += 1
 
-        'Evaluate at the end of the epoch'
+        # For dump evaluation
         evaluate_training(
-            env,
-            dev_df,
-            nav_agent,
-            hunch_llm,
-            steps_in_episode,
-            batch_size_dev,
-            batch_count,
-            verbose,
-            visualize,
-            writer,
-            question_tokenizer,
-            answer_tokenizer,
-            wandb_on,
-            iteration = epoch_id * (len(train_data) // batch_size // mbatches_b4_eval) + (batch_count // mbatches_b4_eval),
+            env = env,
+            dev_df = dev_df,
+            nav_agent = nav_agent,
+            steps_in_episode = steps_in_episode,
+            batch_size_dev = batch_size_dev,
+            batch_count = batch_count,
+            verbose = verbose,
+            visualize = visualize,
+            writer = writer,
+            question_tokenizer = question_tokenizer,
+            wandb_on = wandb_on,
+            iteration = epoch_id,
             timestamp = timestamp,
         )
 
-        # !TODO: Add evaluation metrics for the model's performance at the end of epoch with dev set
-    # !TODO: Add evaluation metrics for the model's performance at the end of epoch with test set
-
-# TODO: Remove if unused
-def initialize_path(questions: torch.Tensor):
-    # Questions must be turned into queries
-    raise NotImplementedError
-
-
-# TODO: Move function to a separate file
-def calculate_llm_reward(
-    hunch_llm: nn.Module,
-    obtained_state: torch.Tensor,
-    answers_ids: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Will take the answers and give an idea of how close we were.
-    This will of course require us to have a language model that will start giving us the  answer.
-    """
-    batch_size = answers_ids.size(0)
-    seq_max_len = answers_ids.size(1)
-    hidden_dim = obtained_state.shape[-1]
-
-    # From the obtained_state we will try to find an answer
-    conditioning_labels = answers_ids[:, :-1].contiguous().to(dtype=torch.int64)
-    teacher_forcing_labels = answers_ids[:, 1:].contiguous().to(dtype=torch.int64)
-
-    answers_inf_softmax = hunch_llm(graph_embeddings=obtained_state, decoder_input_ids=conditioning_labels)
-
-    _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
-
-    loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
-
-    loss = loss_fn(logits.view(-1, logits.shape[-1]), teacher_forcing_labels.view(-1))
-
-    # TODO: Perhaps Stabilize the loss. Normalize it or SMTH like that
-    reward = -loss # We expect this reward function to be concave rather than convex. 
-
-    # Reshape the reward to the batch size
-    reward = reward.view(batch_size, -1)
-
-    # # Get indices of the max value of the final output
-    # answers_inf_ids = torch.argmax(logits, dim=-1)
-
-    return reward, logits
-
-
-def rollout(
-    # TODO: self.mdl should point to (policy network)
-    steps_in_episode: int,
-    nav_agent: ContinuousPolicyGradient,
-    hunch_llm: nn.Module,
-    env: ITLGraphEnvironment,
-    questions_embeddings: torch.Tensor,
-    answers_ids: torch.Tensor,
-    query_ent: List[int],
-    query_rel: List[int],
-    answer_id: List[int],
-    dev_mode: bool = False,
-) -> Tuple[List[torch.Tensor], List[torch.Tensor], Dict[str, Any]]:
-    """
-    Executes reinforcement learning (RL) episode rollouts in parallel for a given number of steps.
-    This function is the core of the training process, used by both `batch_loop` and `batch_loop_dev`.
-    
-    During the rollout:
-    - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions.
-    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE).
-    - Evaluation metrics are optionally collected in development mode (`dev_mode`).
-
-    args:
-        steps_in_episode (int): 
-            The number of steps to execute in each episode.
-        nav_agent (ContinuousPolicyGradient): 
-            The policy network responsible for deciding actions based on the current state.
-        hunch_llm (nn.Module): 
-            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
-        env (ITLGraphEnvironment): 
-            The knowledge graph environment that provides observations, rewards, and state transitions.
-        questions_embeddings (torch.Tensor): 
-            Pre-embedded representations of the questions to be answered. Shape: (batch_size, embedding_dim).
-        answers_ids (torch.Tensor): 
-            Tokenized IDs of the correct answers. Shape: (batch_size, sequence_length).
-        relevant_entities (List[List[int]]): 
-            A list of relevant entities for each question, represented as lists of entity IDs.
-        relevant_rels (List[List[int]]): 
-            A list of relevant relations for each question, represented as lists of relation IDs.
-        answer_id (List[int]): 
-            A list of IDs corresponding to the correct answer entities.
-        dev_mode (bool, optional): 
-            If `True`, additional evaluation metrics are collected for debugging or analysis. Defaults to `False`.
-    returns:
-        - log_action_probs (List[torch.Tensor]): 
-            A list of log probabilities of the actions taken by the navigation agent at each step.
-        - llm_rewards (List[torch.Tensor]): 
-            A list of rewards computed by the language model for each step.
-        - kg_rewards (List[torch.Tensor]): 
-            A list of rewards computed by the knowledge graph environment for each step.
-        - eval_metrics (Dict[str, Any]): 
-            A dictionary of evaluation metrics collected during the rollout (only populated if `dev_mode=True`).
-    """
-
-    assert steps_in_episode > 0
-
-    ########################################
-    # Prepare lists to be returned
-    ########################################
-    log_action_probs = []
-    llm_rewards = []
-    entropies = []
-    kg_rewards = []
-    eval_metrics = DefaultDict(list)
-
-    answer_tensor = get_embeddings_from_indices(
-            env.knowledge_graph.entity_embedding,
-            torch.tensor(answer_id, dtype=torch.int),
-    ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
-
-    # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
-    observations = env.reset(
-        questions_embeddings,
-        answer_ent = answer_id,
-        query_ent = query_ent
-    )
-
-    cur_state = observations.state
-    # Should be of shape (batch_size, 1, hidden_dim)
-
-    # pn.initialize_path(kg) # TOREM: Unecessasry to ask pn to form it for us.
-    states_so_far = []
-    for t in range(steps_in_episode):
-
-        # Ask the navigator to navigate, agent is presented state, not position
-        # State is meant to summrized path history.
-        sampled_actions, log_probs, entropy, _, _ = nav_agent(cur_state)
-
-        # TODO: Make sure we are gettign rewards from the environment.
-        observations, kg_extrinsic_rewards, kg_dones = env.step(sampled_actions)
-        # Ah ssampled_actions are the ones that have to go against the knowlde garph.
-
-        cur_state = observations.state
-        # VISITED EMBEDDINGS IS THE ENCODER
-
-        ########################################
-        # Calculate the Reward
-        ########################################
-        states_so_far.append(cur_state)
-        stacked_states = torch.stack(states_so_far).permute(1, 0, 2)
-        # Calculate how close we are
-        llm_reward, logits = calculate_llm_reward(
-            hunch_llm, stacked_states, answers_ids
+        # Evaluate the Model Performance at the End of the Epoch
+        valid_eval_metrics = test_nav_multihopkg(
+            env = env,
+            nav_agent = nav_agent,
+            test_data = dev_df,
+            steps_in_episode = steps_in_episode,
+            batch_size_test = batch_size_dev,
+            verbose = True,
+            desc = f"Validating Batches {epoch_id}",
         )
 
-        llm_rewards.append(llm_reward)
+        for key, value in valid_eval_metrics.items():
+            if wandb_on:
+                wandb.log({f"valid/{key}": value})
+            else:
+                writer.add_scalar(f"valid/{key}", value, epoch_id)
 
-        kg_intrinsic_reward = env.knowledge_graph.absolute_difference(
-            observations.kge_cur_pos.unsqueeze(1),
-            answer_tensor,
-        ).norm(dim=-1)
+    # Evaluate the Model Performance at the End
+    test_eval_metrics = test_nav_multihopkg(
+        env = env,
+        nav_agent = nav_agent,
+        test_data = test_data,
+        steps_in_episode = steps_in_episode,
+        batch_size_test = batch_size_dev,
+        verbose = True
+    )
 
-        # TODO: Ensure the that the model stays within range of answer, otherwise set kg_done back to false so intrinsic reward kicks back in.
-        kg_rewards.append(kg_dones*kg_extrinsic_rewards - torch.logical_not(kg_dones)*kg_intrinsic_reward) # Merging positive environment rewards with negative intrinsic ones
-
-        ########################################
-        # Log Stuff for across batch
-        ########################################
-        log_action_probs.append(log_probs)
-        entropies.append(entropy)
-
-        ########################################
-        # Stuff that we will only use for evaluation
-        ########################################
-        if dev_mode:
-            eval_metrics["sampled_actions"].append(sampled_actions.detach().cpu())
-            eval_metrics["kge_cur_pos"].append(observations.kge_cur_pos.detach().cpu())
-            eval_metrics["kge_prev_pos"].append(observations.kge_prev_pos.detach().cpu())
-            eval_metrics["kge_action"].append(observations.kge_action.detach().cpu())
-
-            'LLM Metrics'
-            eval_metrics["hunch_llm_final_guesses"].append(logits.argmax(dim=-1))
-            llm_softmax = torch.nn.functional.softmax(logits, dim=-1)
-            llm_entropies = -torch.sum(llm_softmax * torch.log(llm_softmax), dim=-1)
-            eval_metrics["hunch_llm_entropy"].append(llm_entropies.mean().detach().cpu())
-            eval_metrics["hunch_llm_rewards"].append(llm_reward.detach().cpu())
-
-            'KGE Metrics'
-            eval_metrics["kg_extrinsic_rewards"].append(kg_extrinsic_rewards.detach().cpu())
-            eval_metrics["kg_intrinsic_reward"].append(kg_intrinsic_reward.detach().cpu())
-            eval_metrics["kg_dones"].append(kg_dones.detach().cpu())
-
-    if dev_mode:
-        eval_metrics = {k: torch.stack(v) for k, v in eval_metrics.items()}
-
-    # Return Rewards of Rollout as a Tensor
-    return log_action_probs, entropies, llm_rewards, kg_rewards, eval_metrics
-
+    for key, value in test_eval_metrics.items():
+        if wandb_on:
+            wandb.log({f"test/{key}": value})
+        else:
+            writer.add_scalar(f"test/{key}", value, epoch_id)
 
 def main():
     """
@@ -1142,6 +1204,26 @@ def main():
     args, question_tokenizer, answer_tokenizer, logger = initial_setup()
     global wandb_run
 
+    local_time = time.localtime()
+    timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+    
+    if args.wandb:
+        args.wr_name = f"{args.wandb_project_name}_{'supervised'}_{timestamp}"
+        logger.info(
+            f"🪄 Initializing Weights and Biases. Under project name {args.wandb_project_name} and run name {args.wr_name}"
+        )
+        wandb_run = wandb.init(
+            project=args.wandb_project_name,
+            name=args.wr_name,
+            config=vars(args),
+            notes=args.wr_notes,
+        )
+        for k, v in wandb.config.items():
+            setattr(args, k, v)
+
+        print(f"Run URL: {wandb_run.url}")
+        print(f"Args: {args}")
+
     if args.debug:
         logger.info("\033[1;33m Waiting for debugger to attach...\033[0m")
         debugpy.listen(("0.0.0.0", 42020))
@@ -1158,11 +1240,12 @@ def main():
     id2ent, ent2id, id2rel, rel2id =  data_utils.load_dictionaries(args.data_dir)
 
     # Load the QA Dataset
+    # TODO: Modify code so it doesn't require answer_tokenizer
     train_df, dev_df, test_df, train_metadata = data_utils.load_qa_data(
         cached_metadata_path=args.cached_QAMetaData_path,
         raw_QAData_path=args.raw_QAData_path,
         question_tokenizer_name=args.question_tokenizer_name,
-        answer_tokenizer_name=args.answer_tokenizer_name,
+        answer_tokenizer_name=args.answer_tokenizer_name, 
         entity2id=ent2id,
         relation2id=rel2id,
         logger=logger,
@@ -1175,16 +1258,6 @@ def main():
 
     # TODO: Muybe ? (They use it themselves)
     # initialize_model_directory(args, args.seed)
-    if args.wandb:
-        logger.info(
-            f"🪄 Initializing Weights and Biases. Under project name {args.wandb_project_name} and run name {args.wr_name}"
-        )
-        wandb_run = wandb.init(
-            project=args.wandb_project_name,
-            name=args.wr_name,
-            config=vars(args),
-            notes=args.wr_notes,
-        )
 
     ########################################
     # Set the KG Environment
@@ -1246,67 +1319,8 @@ def main():
             nlist=100,
         )
 
-    # # TODO: Improve Visualization for both rotational and non-rotational models
-    # if args.visualize:
-    #     # Train the pca, and also get the emebeddings of the graph as an array
-    #     pca = PCA(n_components=2)
-    #     tmp_graph = (kge_model.get_all_entity_embeddings_wo_dropout() .cpu() .detach() .numpy())
-    #     graph_mag = np.abs(tmp_graph[:,:1000] + 1j*tmp_graph[:,1000:])
-    #     graph_pca = pca.fit(graph_mag).transform(graph_mag)
-
-    #     # Sub-sample it to 100 elements
-    #     random_idx = np.random.choice(graph_pca.shape[0], 100, replace=False)
-    #     graph_pca = graph_pca[random_idx]
-
-    #     # ! Extract annotations for the graph
-    #     graph_annotation = []
-    #     for i0 in range(min(random_idx.shape[0], 15)): # improve this with an argument
-    #         graph_annotation.append(id2ent[random_idx[i0]])
-
-    #     # For visualization
-    #     plt.ion()
-    #     fig = plt.figure(0, figsize=(8,6))
-    #     ax = fig.add_subplot(111)
-    # else:
-    #     graph_pca = None
-    #     graph_annotation = []
-    #     pca = None
-
-    # Setup the pretrained language model
-    logger.info(":: Setting up the pretrained language model")
-    config = BartConfig.from_pretrained("facebook/bart-base")
-    # Access the hidden size (hidden dimension)
-    # TODO: Remove the hardcode. Perhaps
-    embedding_hidden_size = config.d_model
-    embedding_vocab_size = config.vocab_size
-    if args.verbose:
-        print(
-            f"The hidden dimension of the embedding layer is {embedding_hidden_size} and its vocab size is {embedding_vocab_size}"
-        )
-
-    # We prepare our custom encoder for Bart Here
-    hunch_llm = HunchBart(
-        pretrained_bart_model=args.pretrained_llm_for_hunch,
-        answer_tokenizer=answer_tokenizer,
-        # We convert the graph embeddings to state embeddings obeying current state dimensions
-        # graph_embedding_dim=args.llm_model_dim, 
-        graph_embedding_dim=2*dim_entity + dim_entity, # ! NOTE: Changed to match the current state which is the concatenation of the current position + projection of the textual embedding
-    ).to(args.device)
-
-    # # Freeze the Hunch LLM
-    # for param in hunch_llm.parameters():
-    #     param.requires_grad = False
-
-    if args.further_train_hunchs_llm:
-        # TODO: Ensure we dont have to freeze the model for this.
-        hunch_llm.freeze_llm()
-
     # Setup the entity embedding module
     question_embedding_module = AutoModel.from_pretrained(args.question_embedding_model).to(args.device)
-
-    # # Freeze the Question Embedding Module
-    # for param in question_embedding_module.parameters():
-    #     param.requires_grad = False
 
     # Setting up the models
     logger.info(":: Setting up the environment")
@@ -1335,7 +1349,11 @@ def main():
         graph_annotation=None,
         nav_start_emb_type=args.nav_start_emb_type,
         epsilon = args.nav_epsilon_error,
+        use_kge_question_embedding=args.use_kge_question_embedding,
+        add_transition_state=args.add_transition_state
     ).to(args.device)
+
+    # env.concat_projector.to(args.device)
 
     # Now we load this from the embedding models
 
@@ -1346,7 +1364,8 @@ def main():
         gamma=args.rl_gamma,
         dim_action=dim_relation,
         dim_hidden=args.rnn_hidden,
-        dim_observation=2*dim_entity + dim_entity,  # observation will be into history
+        # dim_observation=args.history_dim,  # observation will be into history
+        dim_observation = 3*dim_entity + 2*dim_relation if args.add_transition_state else 2*dim_entity + dim_relation,
     ).to(args.device)
 
     # ======================================
@@ -1374,12 +1393,11 @@ def main():
     if args.visualize:
         args.verbose = True
 
-    train_multihopkg(
+    train_nav_multihopkg(
         batch_size=args.batch_size,
         batch_size_dev=args.batch_size_dev,
         epochs=args.epochs,
         nav_agent=nav_agent,
-        hunch_llm=hunch_llm,
         learning_rate=args.learning_rate,
         steps_in_episode=args.num_rollout_steps,
         env=env,
@@ -1391,16 +1409,19 @@ def main():
         verbose=args.verbose,
         visualize=args.visualize,
         question_tokenizer=question_tokenizer,
-        answer_tokenizer=answer_tokenizer,
         track_gradients=args.track_gradients,
         num_batches_till_eval=args.num_batches_till_eval,
+        adapter_scalar=args.supervised_adapter_scalar,
+        sigma_scalar=args.supervised_sigma_scalar,
+        expected_sigma=args.supervised_expected_sigma,
         wandb_on=args.wandb,
+        timestamp=timestamp,
     )
+
     logger.info("Done with everything. Exiting...")
 
     # TODO: Evaluation of the model
     # metrics = inference(lf)
 
-
 if __name__ == "__main__":
-    main(),
+    main()
