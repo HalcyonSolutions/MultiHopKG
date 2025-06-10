@@ -35,8 +35,19 @@ tar -xvf data-release.tgz
 
 ## Actually Running it
 
+For the model containing the MLM for Question and Answering and KGE for Navigation, run
 ```sh
 python mlm_training.py
+```
+
+For the RL model that focuses the Natural Language Question (NLQ) and KGE Navigation , run
+```sh
+python nav_training.py
+```
+
+For the Supervised-Path Learning Navigation, run
+```sh
+python nav_superviced_training.py
 ```
 
 ## Train and Evaluate KGE Model
