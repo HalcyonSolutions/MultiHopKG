@@ -4,6 +4,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
+import json
+import shutil
+
 import logging
 from collections.abc import Mapping
 from typing import Any, Union
@@ -996,3 +1000,72 @@ def calculate_entity_range(embeddings: Union[nn.Embedding, nn.Parameter]):
         min_range = torch.min(embeddings.weight.data).item()
     return min_range, max_range
 
+def save_configs(args):
+    '''
+    Save the configurations to a json file
+    '''
+    
+    argparse_dict = vars(args)
+    with open(os.path.join(args.save_path, 'config.json'), 'w') as fjson:
+        json.dump(argparse_dict, fjson)
+
+def save_model(model, optimizer, save_variable_list, save_dir, autoencoder_flag=False):
+    '''
+    Save the parameters of the model and the optimizer,
+    as well as some other variables such as step and learning_rate
+    '''
+    
+    torch.save({
+        **save_variable_list,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict()},
+        os.path.join(save_dir, 'checkpoint')
+    )
+    
+    entity_embedding = model.entity_embedding.detach().cpu().numpy()
+    np.save(
+        os.path.join(save_dir, 'entity_embedding'), 
+        entity_embedding
+    )
+    
+    relation_embedding = model.relation_embedding.detach().cpu().numpy()
+    np.save(
+        os.path.join(save_dir, 'relation_embedding'), 
+        relation_embedding
+    )
+
+    if autoencoder_flag:
+        encoded_relation = model.relation_encoder(model.relation_embedding)
+        np.save(
+            os.path.join(save_dir, 'encoded_relation'),
+            encoded_relation.detach().cpu().numpy()
+        )     
+        decoded_relation = model.relation_decoder(encoded_relation)
+        np.save(
+            os.path.join(save_dir, 'decoded_relation'),
+            decoded_relation.detach().cpu().numpy()
+        )
+
+def update_best_model(model, optimizer, save_variable_list, save_dir, 
+                     metric_name, metric_value, best_metric_value, 
+                     best_model_path, autoencoder_flag=False, maximize=True):
+    """
+    Overwrite previous best model in root save_dir if metric is improved.
+    """
+    improved = (best_metric_value is None) or ((metric_value > best_metric_value) if maximize else (metric_value < best_metric_value))
+    if improved:
+        old = best_metric_value
+        best_metric_value = metric_value
+        save_model(model, optimizer, save_variable_list, save_dir, autoencoder_flag)
+        logging.info(f"Best model updated in root: {save_dir} with {metric_name}: {metric_value:.5f} (prev best: {old})")
+        best_metric_value = metric_value
+        best_model_path = save_dir
+    else:
+        logging.info(f"Current {metric_name}: {metric_value:.5f} did not improve over best {metric_name}: {best_metric_value:.5f}. Best model remains at: {best_model_path}")
+    return best_metric_value, best_model_path
+
+def clean_up_checkpoints(save_path):
+    checkpoints_dir = os.path.join(save_path, "checkpoints")
+    if os.path.exists(checkpoints_dir):
+        shutil.rmtree(checkpoints_dir)
+        logging.info(f"Checkpoints directory '{checkpoints_dir}' has been deleted.")

@@ -11,14 +11,13 @@ import os
 import random
 import wandb
 import time
-import shutil
 
 import numpy as np
 import torch
 
 from torch.utils.data import DataLoader
 
-from multihopkg.exogenous.sun_models import KGEModel
+from multihopkg.exogenous.sun_models import KGEModel, save_model, update_best_model, clean_up_checkpoints, save_configs
 from multihopkg.utils.data_splitting import read_triple
 
 from multihopkg.utils.setup import set_seeds
@@ -75,6 +74,9 @@ def parse_args(args=None):
     parser.add_argument('--nentity', type=int, default=0, help='DO NOT MANUALLY SET')
     parser.add_argument('--nrelation', type=int, default=0, help='DO NOT MANUALLY SET')
 
+    parser.add_argument('--reload_entities', action='store_true', help='Reload entity embeddings from checkpoint for transfer learning')
+    parser.add_argument('--reload_relationship', action='store_true', help='Reload relation embeddings from checkpoint for transfer learning')
+
     parser.add_argument('--autoencoder_flag', action='store_true', help='Toggle autoencoder')
     parser.add_argument('--autoencoder_hidden_dim', default=50, type=int, help='Autoencoder hidden dimension')
     parser.add_argument('--autoencoder_lambda', default=0.1, type=float, help='Autoencoder regularization')
@@ -106,76 +108,6 @@ def override_config(args):
     args.double_relation_embedding = argparse_dict['double_relation_embedding']
     args.hidden_dim = argparse_dict['hidden_dim']
     args.test_batch_size = argparse_dict['test_batch_size']
-
-def save_configs(args):
-    '''
-    Save the configurations to a json file
-    '''
-    
-    argparse_dict = vars(args)
-    with open(os.path.join(args.save_path, 'config.json'), 'w') as fjson:
-        json.dump(argparse_dict, fjson)
-
-def save_model(model, optimizer, save_variable_list, save_dir, autoencoder_flag=False):
-    '''
-    Save the parameters of the model and the optimizer,
-    as well as some other variables such as step and learning_rate
-    '''
-    
-    torch.save({
-        **save_variable_list,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict()},
-        os.path.join(save_dir, 'checkpoint')
-    )
-    
-    entity_embedding = model.entity_embedding.detach().cpu().numpy()
-    np.save(
-        os.path.join(save_dir, 'entity_embedding'), 
-        entity_embedding
-    )
-    
-    relation_embedding = model.relation_embedding.detach().cpu().numpy()
-    np.save(
-        os.path.join(save_dir, 'relation_embedding'), 
-        relation_embedding
-    )
-
-    if autoencoder_flag:
-        encoded_relation = model.relation_encoder(model.relation_embedding)
-        np.save(
-            os.path.join(save_dir, 'encoded_relation'),
-            encoded_relation.detach().cpu().numpy()
-        )     
-        decoded_relation = model.relation_decoder(encoded_relation)
-        np.save(
-            os.path.join(save_dir, 'decoded_relation'),
-            decoded_relation.detach().cpu().numpy()
-        )
-
-def update_best_model(model, optimizer, save_variable_list, save_dir, 
-                     metric_name, metric_value, best_metric_value, 
-                     best_model_path, autoencoder_flag=False, maximize=True):
-    """
-    Overwrite previous best model in root save_dir if metric is improved.
-    """
-    improved = (best_metric_value is None) or ((metric_value > best_metric_value) if maximize else (metric_value < best_metric_value))
-    if improved:
-        old = best_metric_value
-        best_metric_value = metric_value
-        save_model(model, optimizer, save_variable_list, save_dir, autoencoder_flag)
-        logging.info(f"Best model updated in root: {save_dir} with {metric_name}: {metric_value:.5f} (prev best: {old})")
-        best_metric_value = metric_value
-        best_model_path = save_dir
-    else:
-        logging.info(f"Current {metric_name}: {metric_value:.5f} did not improve over best {metric_name}: {best_metric_value:.5f}. Best model remains at: {best_model_path}")
-    return best_metric_value, best_model_path
-
-def clean_up_checkpoints(save_path):
-    checkpoints_dir = os.path.join(save_path, "checkpoints")
-    if os.path.exists(checkpoints_dir):
-        shutil.rmtree(checkpoints_dir)
-        logging.info(f"Checkpoints directory '{checkpoints_dir}' has been deleted.")
 
 def set_logger(args):
     '''
