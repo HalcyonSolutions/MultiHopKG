@@ -76,6 +76,8 @@ def parse_args(args=None):
 
     parser.add_argument('--reload_entities', action='store_true', help='Reload entity embeddings from checkpoint for transfer learning')
     parser.add_argument('--reload_relationship', action='store_true', help='Reload relation embeddings from checkpoint for transfer learning')
+    parser.add_argument('--freeze_entities', action='store_true', help='Freeze entity embeddings (no gradient updates)')
+    parser.add_argument('--freeze_relationship', action='store_true', help='Freeze relation embeddings (no gradient updates)')
 
     parser.add_argument('--autoencoder_flag', action='store_true', help='Toggle autoencoder')
     parser.add_argument('--autoencoder_hidden_dim', default=50, type=int, help='Autoencoder hidden dimension')
@@ -142,7 +144,37 @@ def log_metrics(mode, step, metrics):
     # Log to wandb as well
     if wandb.run is not None:
         wandb.log({f"{mode}_{metric}": value for metric, value in metrics.items()}, step=step)    
-        
+
+def reload_embeddings_only(kge_model, init_checkpoint, reload_entities=False, reload_relationship=False):
+    """
+    Reload only entity or relation embeddings from a checkpoint directory.
+    """
+    checkpoint_path = os.path.join(init_checkpoint, 'checkpoint')
+    if not os.path.exists(checkpoint_path):
+        raise ValueError(f"Checkpoint not found at {checkpoint_path}")
+
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    state_dict = checkpoint['model_state_dict']
+
+    current_state = kge_model.state_dict()
+
+    reload_keys = []
+    if reload_entities:
+        # All keys for entity embedding
+        reload_keys.extend([k for k in state_dict.keys() if "entity_embedding" in k])
+    if reload_relationship:
+        reload_keys.extend([k for k in state_dict.keys() if "relation_embedding" in k])
+        # If you have autoencoder weights for relations, add those here if you wish:
+        # reload_keys.extend([k for k in state_dict.keys() if "relation_encoder" in k or "relation_decoder" in k])
+
+    # Overwrite only requested keys
+    for key in reload_keys:
+        if key in current_state:
+            current_state[key] = state_dict[key]
+    kge_model.load_state_dict(current_state, strict=False)
+    logging.info(f"Reloaded embeddings: {', '.join(reload_keys)} from {checkpoint_path}")
+
+
 def main(args):
     # Initialize wandb
 
@@ -288,18 +320,38 @@ def main(args):
             args.saving_metric = ''
 
     if args.init_checkpoint:
-        # Restore model from checkpoint directory
-        logging.info('Loading checkpoint %s...' % args.init_checkpoint)
-        checkpoint = torch.load(os.path.join(args.init_checkpoint, 'checkpoint'))
-        init_step = checkpoint['step']
-        kge_model.load_state_dict(checkpoint['model_state_dict'])
-        if args.do_train:
-            current_learning_rate = checkpoint['current_learning_rate']
-            warm_up_steps = checkpoint['warm_up_steps']
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if getattr(args, "reload_entities", False) or getattr(args, "reload_relationship", False):
+            # Only reload selected embeddings (transfer learning mode)
+            reload_embeddings_only(
+                kge_model,
+                args.init_checkpoint,
+                reload_entities=getattr(args, "reload_entities", False),
+                reload_relationship=getattr(args, "reload_relationship", False),
+            )
+            # Initialize optimizer as new!
+            init_step = 0
+        else:
+            # Restore model from checkpoint directory
+            logging.info('Loading checkpoint %s...' % args.init_checkpoint)
+            checkpoint = torch.load(os.path.join(args.init_checkpoint, 'checkpoint'))
+            init_step = checkpoint['step']
+            kge_model.load_state_dict(checkpoint['model_state_dict'])
+            if args.do_train:
+                current_learning_rate = checkpoint['current_learning_rate']
+                warm_up_steps = checkpoint['warm_up_steps']
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     else:
         logging.info('Ramdomly Initializing %s Model...' % args.model)
         init_step = 0
+
+    # Freeze entity and relation embeddings if specified
+    if getattr(args, "freeze_entities", False):
+        kge_model.entity_embedding.requires_grad = False
+        logging.info("Entity embeddings frozen (requires_grad=False)")
+
+    if getattr(args, "freeze_relationship", False):
+        kge_model.relation_embedding.requires_grad = False
+        logging.info("Relation embeddings frozen (requires_grad=False)")
     
     step = init_step
     
@@ -423,7 +475,7 @@ def main(args):
                     'warm_up_steps': warm_up_steps
                 }
                 save_configs(args)
-                os.path.join(args.save_path, 'checkpoints', str(step))
+                save_dir = os.path.join(args.save_path, 'checkpoints', str(step))
                 os.makedirs(save_dir, exist_ok=True)
                 save_model(
                     kge_model,
