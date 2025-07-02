@@ -274,7 +274,7 @@ class KGEModel(nn.Module):
         in their triple ((head, relation) or (relation, tail)).
         '''
 
-        if mode == 'single':
+        if mode == 'single': # Used for Training Positive Samples Only
             batch_size, negative_sample_size = sample.size(0), 1
             
             head = torch.index_select(
@@ -303,7 +303,7 @@ class KGEModel(nn.Module):
                     index=sample[:,1]
                 ).unsqueeze(1)
             
-        elif mode == 'head-batch':
+        elif mode == 'head-batch': # Used for Training Negative Samples Only
             tail_part, head_part = sample
             batch_size, negative_sample_size = head_part.size(0), head_part.size(1)
             
@@ -333,7 +333,7 @@ class KGEModel(nn.Module):
                     index=tail_part[:, 1]
                 ).unsqueeze(1)
             
-        elif mode == 'tail-batch':
+        elif mode == 'tail-batch': # Used for Training Negative Samples Only
             head_part, tail_part = sample
             batch_size, negative_sample_size = tail_part.size(0), tail_part.size(1)
             
@@ -362,6 +362,35 @@ class KGEModel(nn.Module):
                     dim=0, 
                     index=head_part[:, 1]
                 ).unsqueeze(1)
+        elif mode == 'relation-batch': # Used for Training Negative Samples Only
+            head_part, relation_part = sample
+            batch_size, negative_sample_size = relation_part.size(0), relation_part.size(1)
+
+            head = torch.index_select(
+                self.entity_embedding,
+                dim=0,
+                index=head_part[:, 0]
+            ).unsqueeze(1)
+
+            relation = torch.index_select(
+                self.relation_embedding,
+                dim=0,
+                index=relation_part.view(-1)
+            ).view(batch_size, negative_sample_size, -1)
+
+            tail = torch.index_select(
+                self.entity_embedding,
+                dim=0,
+                index=head_part[:, 2]
+            ).unsqueeze(1)
+
+            if self.model_name == 'TransH':
+                norm_vector = torch.index_select(
+                    self.norm_vector,
+                    dim=0,
+                    index=relation_part.view(-1)
+                ).view(batch_size, negative_sample_size, -1)
+
         else:
             raise ValueError('mode %s not supported' % mode)
 
@@ -605,33 +634,47 @@ class KGEModel(nn.Module):
         else:
             #Otherwise use standard (filtered) MRR, MR, HITS@1, HITS@3, and HITS@10 metrics
             #Prepare dataloader for evaluation
-            test_dataloader_head = DataLoader(
-                TestDataset(
-                    test_triples, 
-                    all_true_triples, 
-                    args.nentity, 
-                    args.nrelation, 
-                    'head-batch'
-                ), 
-                batch_size=args.test_batch_size,
-                num_workers=max(1, args.cpu_num//2), 
-                collate_fn=TestDataset.collate_fn
-            )
+            test_dataset_list = []
+            if args.task == 'link_prediction' or args.task == 'all':
+                test_dataloader_head = DataLoader(
+                    TestDataset(
+                        test_triples, 
+                        all_true_triples, 
+                        args.nentity, 
+                        args.nrelation, 
+                        'head-batch'
+                    ), 
+                    batch_size=args.test_batch_size,
+                    num_workers=max(1, args.cpu_num//2), 
+                    collate_fn=TestDataset.collate_fn
+                )
 
-            test_dataloader_tail = DataLoader(
-                TestDataset(
-                    test_triples, 
-                    all_true_triples, 
-                    args.nentity, 
-                    args.nrelation, 
-                    'tail-batch'
-                ), 
-                batch_size=args.test_batch_size,
-                num_workers=max(1, args.cpu_num//2), 
-                collate_fn=TestDataset.collate_fn
-            )
-            
-            test_dataset_list = [test_dataloader_head, test_dataloader_tail]
+                test_dataloader_tail = DataLoader(
+                    TestDataset(
+                        test_triples, 
+                        all_true_triples, 
+                        args.nentity, 
+                        args.nrelation, 
+                        'tail-batch'
+                    ), 
+                    batch_size=args.test_batch_size,
+                    num_workers=max(1, args.cpu_num//2), 
+                    collate_fn=TestDataset.collate_fn
+                )
+
+                test_dataset_list.extend([test_dataloader_head, test_dataloader_tail])
+            if args.task == 'relation_prediction' or args.task == 'all':
+                test_dataloader_relation = DataLoader(
+                    TestDataset(
+                        test_triples, 
+                        all_true_triples, 
+                        args.nentity, 
+                        args.nrelation, 'relation-batch'), 
+                    batch_size=args.test_batch_size,
+                    num_workers=max(1, args.cpu_num//2),
+                    collate_fn=TestDataset.collate_fn
+                )
+                test_dataset_list.extend([test_dataloader_relation])
             
             logs = []
 
@@ -659,6 +702,8 @@ class KGEModel(nn.Module):
                             positive_arg = positive_sample[:, 0]
                         elif mode == 'tail-batch':
                             positive_arg = positive_sample[:, 2]
+                        elif mode == 'relation-batch':
+                            positive_arg = positive_sample[:, 1]
                         else:
                             raise ValueError('mode %s not supported' % mode)
 

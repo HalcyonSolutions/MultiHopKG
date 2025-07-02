@@ -23,7 +23,7 @@ from multihopkg.utils.data_splitting import read_triple
 from multihopkg.utils.setup import set_seeds
 
 from multihopkg.datasets import TrainDataset
-from multihopkg.datasets import BidirectionalOneShotIterator
+from multihopkg.datasets import BidirectionalOneShotIterator, MultiTaskIterator, OneShotIterator
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
@@ -71,6 +71,9 @@ def parse_args(args=None):
     parser.add_argument('--log_steps', default=100, type=int, help='train log every xx steps')
     parser.add_argument('--test_log_steps', default=1000, type=int, help='valid/test log every xx steps')
     
+    parser.add_argument('--task', type=str, choices=['link_prediction', 'relation_prediction', 'all'], default='link_prediction',
+                        help='Specify which task to train: link_prediction, relation-prediction, or all (multi-task)')
+
     parser.add_argument('--nentity', type=int, default=0, help='DO NOT MANUALLY SET')
     parser.add_argument('--nrelation', type=int, default=0, help='DO NOT MANUALLY SET')
 
@@ -174,6 +177,14 @@ def reload_embeddings_only(kge_model, init_checkpoint, reload_entities=False, re
     kge_model.load_state_dict(current_state, strict=False)
     logging.info(f"Reloaded embeddings: {', '.join(reload_keys)} from {checkpoint_path}")
 
+def create_dataloader(train_triples, nentity, nrelation, negative_sample_size, batch_size, cpu_num, mode):
+    return DataLoader(
+        TrainDataset(train_triples, nentity, nrelation, negative_sample_size, mode),
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=max(1, cpu_num // 2),
+        collate_fn=TrainDataset.collate_fn
+    )
 
 def main(args):
     # Initialize wandb
@@ -285,23 +296,21 @@ def main(args):
     
     if args.do_train:
         # Set training dataloader iterator
-        train_dataloader_head = DataLoader(
-            TrainDataset(train_triples, nentity, nrelation, args.negative_sample_size, 'head-batch'), 
-            batch_size=args.batch_size,
-            shuffle=True, 
-            num_workers=max(1, args.cpu_num//2),
-            collate_fn=TrainDataset.collate_fn
-        )
-        
-        train_dataloader_tail = DataLoader(
-            TrainDataset(train_triples, nentity, nrelation, args.negative_sample_size, 'tail-batch'), 
-            batch_size=args.batch_size,
-            shuffle=True, 
-            num_workers=max(1, args.cpu_num//2),
-            collate_fn=TrainDataset.collate_fn
-        )
-        
-        train_iterator = BidirectionalOneShotIterator(train_dataloader_head, train_dataloader_tail)
+        if args.task == 'all':
+            modes = ['head-batch', 'tail-batch', 'relation-batch']
+            dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode)) for mode in modes]
+            train_iterator = MultiTaskIterator(dataloaders)
+
+        elif args.task == 'link_prediction':
+            train_dataloader_head = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'head-batch')
+            train_dataloader_tail = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'tail-batch')
+            train_iterator = BidirectionalOneShotIterator(train_dataloader_head, train_dataloader_tail)
+
+        elif args.task == 'relation_prediction':
+            train_dataloader_relation = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'relation-batch')
+            train_iterator = OneShotIterator(train_dataloader_relation)
+        else:
+            raise ValueError(f"Unknown task: {args.task}. Supported tasks are 'link_prediction' and 'relation-prediction'.")
         
         # Set training configuration
         current_learning_rate = args.learning_rate
