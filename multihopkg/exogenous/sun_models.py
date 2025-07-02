@@ -83,9 +83,18 @@ class KGEModel(nn.Module):
         
         if model_name == 'pRotatE':
             self.modulus = nn.Parameter(torch.Tensor([[0.5 * self.embedding_range.item()]]))
+
+        if model_name == 'TransH':
+            self.norm_vector = nn.Parameter(torch.zeros(nrelation, self.relation_dim))
+
+            nn.init.uniform_(
+                tensor=self.norm_vector,
+                a=-self.embedding_range.item(),
+                b=self.embedding_range.item()
+            )
         
         #Do not forget to modify this line when you add a new model in the "forward" function
-        if model_name not in ['TransE', 'DistMult', 'ComplEx', 'RotatE', 'pRotatE']:
+        if model_name not in ['TransE', 'TransH', 'DistMult', 'ComplEx', 'RotatE', 'pRotatE']:
             raise ValueError('model %s not supported' % model_name)
             
         if model_name == 'RotatE' and (not double_entity_embedding or double_relation_embedding):
@@ -102,6 +111,7 @@ class KGEModel(nn.Module):
         # Initialize the model forward function dictionary once
         self.model_func = {
             'TransE': self.TransE,
+            'TransH': self.TransH,
             'DistMult': self.DistMult,
             'ComplEx': self.ComplEx,
             'RotatE': self.RotatE,
@@ -111,6 +121,7 @@ class KGEModel(nn.Module):
         # Initialize the flexible forward function dictionary once
         self.flexible_func = {
             "TransE": self.flexible_forward_transe,
+            "TransH": self.flexible_forward_transh,
             "RotatE": self.flexible_forward_rotate,
             "pRotatE": self.flexible_forward_protate,
         }
@@ -118,14 +129,15 @@ class KGEModel(nn.Module):
         # Initialize the difference function dictionary once
         self.difference_func = {
             "TransE": self.difference_euclidean,
+            "TransH": self.difference_euclidean,
             "RotatE": self.difference_euclidean,
             "pRotatE": self.difference_phase,
         }
 
-
         # Initialize the absolute difference function dictionary once
         self.absolute_difference_func = {
             "TransE": self.absolute_difference_euclidean,
+            "TransH": self.absolute_difference_euclidean,
             "RotatE": self.absolute_difference_euclidean,
             "pRotatE": self.absolute_difference_phase,
         }
@@ -133,12 +145,15 @@ class KGEModel(nn.Module):
         # Initialize the denormalize and wrap functions for relations
         self.relation_denormalize_func = {
             "TransE": lambda x: x, # no operation is needed
+            "TransH": lambda x: x, # no operation is needed
             "RotatE": self.denormalize_embedding, # also a phase
             "pRotatE": self.denormalize_embedding,
         }
 
+        # for cyclic values
         self.relation_wrap_func = {
             "TransE": lambda x: x, # no operation is needed
+            "TransH": lambda x: x, # no operation is needed
             "RotatE": self.wrap_rotate_embedding, # also a phase
             "pRotatE": self.wrap_rotate_embedding,
         }
@@ -146,12 +161,14 @@ class KGEModel(nn.Module):
         # Initialize the denormalize and wrap functions for entities
         self.entity_denormalize_func = {
             "TransE": lambda x: x, # no operation is needed
+            "TransH": lambda x: x, # no operation is needed
             "RotatE": lambda x: x, # no operation is needed, complex number
             "pRotatE": self.denormalize_embedding,
         }
 
         self.entity_wrap_func = {
             "TransE": lambda x: x, # no operation is needed
+            "TransH": lambda x: x, # no operation is needed
             "RotatE": lambda x: x, # no operation is needed, complex number
             "pRotatE": self.wrap_rotate_embedding,
         }
@@ -168,12 +185,15 @@ class KGEModel(nn.Module):
                 nn.Tanh()  # ReLU(), I don't notice significant difference in model performance
             )
 
-    def load_embeddings(self, entity_embedding: np.ndarray, relation_embedding: np.ndarray):
+    def load_embeddings(self, entity_embedding: np.ndarray, relation_embedding: np.ndarray, norm_embedding: np.ndarray = None):
         '''
         Load the entity and relation embeddings from the given paths.
         '''
         self.entity_embedding.data = torch.from_numpy(entity_embedding)
         self.relation_embedding.data = torch.from_numpy(relation_embedding)
+
+        if self.model_name == 'TransH' and norm_embedding is not None:
+            self.norm_vector.data = torch.from_numpy(norm_embedding)
 
     @classmethod
     def from_pretrained(
@@ -183,6 +203,7 @@ class KGEModel(nn.Module):
         relation_embedding: np.ndarray,
         gamma: float,
         state_dict: Mapping[str, Any],
+        norm_embedding: Union[np.ndarray, None] = None,
     ) -> 'KGEModel':
         """
         Create a KGEModel from pretrained embeddings.
@@ -227,12 +248,16 @@ class KGEModel(nn.Module):
         )
         
         # Load pretrained embeddings
-        model.load_embeddings(entity_embedding, relation_embedding)
+        model.load_embeddings(entity_embedding, relation_embedding, norm_embedding)
         model.load_state_dict(state_dict)
 
         # Only makes sense in Euclidean space
-        model.centroid = calculate_entity_centroid(model.entity_embedding)
-        model.embedding_range_min, model.embedding_range_max = calculate_entity_range(model.entity_embedding)
+        if model.model_name == 'TransH':
+            entities = model.transfer_transh(model.entity_embedding.data, model.norm_vector.data)
+        else:
+            entities = model.entity_embedding.data
+        model.centroid = calculate_entity_centroid(entities)
+        model.embedding_range_min, model.embedding_range_max = calculate_entity_range(entities)
         return model
 
     #-----------------------------------------------------------------------
@@ -269,6 +294,14 @@ class KGEModel(nn.Module):
                 dim=0, 
                 index=sample[:,2]
             ).unsqueeze(1)
+
+            if self.model_name == 'TransH':
+                # For TransH, we need to project the head onto the relation hyperplane
+                norm_vector = torch.index_select(
+                    self.norm_vector, 
+                    dim=0, 
+                    index=sample[:,1]
+                ).unsqueeze(1)
             
         elif mode == 'head-batch':
             tail_part, head_part = sample
@@ -291,6 +324,14 @@ class KGEModel(nn.Module):
                 dim=0, 
                 index=tail_part[:, 2]
             ).unsqueeze(1)
+
+            if self.model_name == 'TransH':
+                # For TransH, we need to project the head onto the relation hyperplane
+                norm_vector = torch.index_select(
+                    self.norm_vector, 
+                    dim=0, 
+                    index=tail_part[:, 1]
+                ).unsqueeze(1)
             
         elif mode == 'tail-batch':
             head_part, tail_part = sample
@@ -313,9 +354,21 @@ class KGEModel(nn.Module):
                 dim=0, 
                 index=tail_part.view(-1)
             ).view(batch_size, negative_sample_size, -1)
-            
+
+            if self.model_name == 'TransH':
+                # For TransH, we need to project the tail onto the relation hyperplane
+                norm_vector = torch.index_select(
+                    self.norm_vector, 
+                    dim=0, 
+                    index=head_part[:, 1]
+                ).unsqueeze(1)
         else:
             raise ValueError('mode %s not supported' % mode)
+
+        if self.model_name == 'TransH':
+            'Project head and tail onto the relation hyperplane'
+            head = self.transfer_transh(head, norm_vector)
+            tail = self.transfer_transh(tail, norm_vector)
 
         # Autoencoder 
         if self.autoencoder_flag:
@@ -355,6 +408,9 @@ class KGEModel(nn.Module):
 
         score = self.gamma.item() - torch.norm(score, p=1, dim=2)
         return score
+    
+    def TransH(self, head, relation, tail, mode):
+        return self.TransE(head, relation, tail, mode)
 
     def DistMult(self, head, relation, tail, mode):
         if mode == 'head-batch':
@@ -750,6 +806,29 @@ class KGEModel(nn.Module):
         """
         return head + relation
 
+    def flexible_forward_transh(
+        self, cur_states: torch.Tensor, cur_actions: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Applies a euclidean translation to the head entity given the relation.
+        This is meant to work on the original TransH model.
+        Assumes we are head entity has already been projected onto the relation hyperplane and
+        returns the tail entity in this hyperplane.
+        """
+
+        tail = self.TransE_Eval(cur_states, cur_actions)
+
+        # TODO: Improve upon this, this is a temporatory solution
+        # TODO: Check that the min and max embedding are in the projected hyperplane
+        tail = torch.clamp(tail, self.embedding_range_min, self.embedding_range_max)
+
+        return tail
+
+    def transfer_transh(self, entity_embedding: torch.Tensor, norm_vector: torch.Tensor) -> torch.Tensor:
+        norm_vector = F.normalize(norm_vector, p=2, dim=-1)
+        # Not entirely sure if it is dimension 2 or 1 (1 according to muKG)
+        entity_embedding = entity_embedding - torch.sum(entity_embedding * norm_vector, dim=-1, keepdim=True) * norm_vector
+        return entity_embedding
 
     def flexible_forward(self, cur_states: torch.Tensor, cur_actions: torch.Tensor) -> torch.Tensor:
         """
@@ -1033,6 +1112,13 @@ def save_model(model, optimizer, save_variable_list, save_dir, autoencoder_flag=
         os.path.join(save_dir, 'relation_embedding'), 
         relation_embedding
     )
+
+    if model.model_name == 'TransH':
+        norm_vector = model.norm_vector.detach().cpu().numpy()
+        np.save(
+            os.path.join(save_dir, 'norm_vector'),
+            norm_vector
+        )
 
     if autoencoder_flag:
         encoded_relation = model.relation_encoder(model.relation_embedding)
