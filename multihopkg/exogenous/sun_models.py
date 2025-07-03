@@ -744,12 +744,12 @@ class KGEModel(nn.Module):
                                     for K in [1, 3, 10]:
                                         topk_preds = argsort_raw[i, :K].tolist()
                                         in_k = sum(1 for pred in topk_preds if pred in constraint_set)
-                                        score_k = in_k / K
-                                        semak = score_k * min(1.0, K / N)
-                                        log_entry[f'Generalized-Sem@{K}'] = semak
+                                        denominator = min(K, N)
+                                        sem_recall_k = in_k / denominator # equivalent to (in_k / K) * max(1.0, K / N)
+                                        log_entry[f'Sem-Recall@{K}'] = sem_recall_k
                                 else:
                                     for K in [1, 3, 10]:
-                                        log_entry[f'Generalized-Sem@{K}'] = None
+                                        log_entry[f'Sem-Recall@{K}'] = None
                                 
                             logs.append(log_entry)
 
@@ -759,7 +759,7 @@ class KGEModel(nn.Module):
                         step += 1
 
             # Separate base metrics from Sem@K
-            exclude_keys = {f'Generalized-Sem@{K}' for K in [1, 3, 10]}
+            exclude_keys = {f'Sem-Recall@{K}' for K in [1, 3, 10]}
             all_keys = set(logs[0].keys())
             base_keys = all_keys - exclude_keys
 
@@ -767,11 +767,11 @@ class KGEModel(nn.Module):
             for metric in base_keys:
                 metrics[metric] = sum([log[metric] for log in logs])/len(logs)
 
-            # Aggregate Generalized-Sem@K values
+            # Aggregate Sem-Recall@K values
             for K in [1, 3, 10]:
-                semak_key = f'Generalized-Sem@{K}'
-                semak_values = [log[semak_key] for log in logs if semak_key in log and log[semak_key] is not None]
-                if semak_values: metrics[semak_key] = sum(semak_values) / len(semak_values)
+                key = f'Sem-Recall@{K}'
+                values = [log[key] for log in logs if key in log and log[key] is not None]
+                if values: metrics[key] = sum(values) / len(values)
 
         return metrics
 
