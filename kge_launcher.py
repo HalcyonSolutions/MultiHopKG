@@ -26,6 +26,7 @@ def main():
     print(f"Alpha: {config.alpha}")
     print(f"Learning Rate: {config.learning_rate}")
     print(f"Max Steps: {config.max_steps}")
+    print(f"Task: {config.task}")
     print(f"Test Batch Size: {config.test_batch_size}")
     print(f"WandB Project: {config.wandb_project}")
     print(f"Track: {config.track}")
@@ -61,6 +62,7 @@ def main():
             "-lr", str(config.learning_rate),
             "--max_steps", str(config.max_steps),
             "-save", f"models/{config.model}_{config.dataset}_dim{config.hidden_dim}_{timestamp}",
+            "--task", str(config.task),
             "--test_batch_size", str(config.test_batch_size),
             "--valid_steps", str(config.valid_steps),
             "--saving_metric", config.saving_metric,

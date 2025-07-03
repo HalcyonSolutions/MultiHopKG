@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import torch
 import numpy as np
+from collections import defaultdict
 from torch.utils.data import Dataset
 
 class TestDataset(Dataset):
@@ -246,3 +247,22 @@ class MultiTaskIterator(object):
         while True:
             for data in dataloader:
                 yield data
+
+#----------------------------------------------
+
+def build_type_constraints(triples):
+    """
+    Given triples, build implicit domain and range constraints for each relation.
+    Returns:
+        domain_constraints: relation → set of valid head entities
+        range_constraints: relation → set of valid tail entities
+    """
+    domain_constraints = defaultdict(set)
+    range_constraints = defaultdict(set)
+
+    for h, r, t in triples:
+        domain_constraints[r].add(h)
+        range_constraints[r].add(t)
+
+    # Convert to normal dicts for serialization safety
+    return dict(domain_constraints), dict(range_constraints)

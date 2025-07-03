@@ -23,7 +23,7 @@ from multihopkg.utils.data_splitting import read_triple
 from multihopkg.utils.setup import set_seeds
 
 from multihopkg.datasets import TrainDataset
-from multihopkg.datasets import BidirectionalOneShotIterator, MultiTaskIterator, OneShotIterator
+from multihopkg.datasets import BidirectionalOneShotIterator, MultiTaskIterator, OneShotIterator, build_type_constraints
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
@@ -264,6 +264,11 @@ def main(args):
     
     #All true triples
     all_true_triples = train_triples + valid_triples + test_triples
+    domain_constraints, range_constraints = build_type_constraints(all_true_triples)
+    constraints = {
+        'domain_constraints': domain_constraints,
+        'range_constraints': range_constraints
+    }
 
     # Logging before initializing the model
     if args.autoencoder_flag and not args.double_relation_embedding:
@@ -425,7 +430,7 @@ def main(args):
                 
             if args.do_valid and step % args.valid_steps == 0:
                 logging.info('Evaluating on Valid Dataset...')
-                metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
+                metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args, constraints=constraints)
                 log_metrics('Valid', step, metrics)
 
                 # If the metric is present and above the threshold, save the model
@@ -474,7 +479,7 @@ def main(args):
             )
         else:
             logging.info('Final Evaluation on Valid Dataset...')
-            metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
+            metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args, constraints=constraints)
             log_metrics('Valid', step, metrics)
 
             if args.saving_metric in metrics and metrics[args.saving_metric] > args.saving_threshold:
@@ -505,17 +510,17 @@ def main(args):
         
     if args.do_valid:
         logging.info('Evaluating on Valid Dataset...')
-        metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
+        metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args, constraints=constraints)
         log_metrics('Valid', step, metrics)
     
     if args.do_test:
         logging.info('Evaluating on Test Dataset...')
-        metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args)
+        metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args, constraints=constraints)
         log_metrics('Test', step, metrics)
     
     if args.evaluate_train:
         logging.info('Evaluating on Training Dataset...')
-        metrics = kge_model.test_step(kge_model, train_triples, all_true_triples, args)
+        metrics = kge_model.test_step(kge_model, train_triples, all_true_triples, args, constraints=constraints)
         log_metrics('Test', step, metrics)
         
 if __name__ == '__main__':

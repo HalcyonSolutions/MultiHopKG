@@ -599,7 +599,7 @@ class KGEModel(nn.Module):
 
     
     @staticmethod
-    def test_step(model, test_triples, all_true_triples, args):
+    def test_step(model, test_triples, all_true_triples, args, constraints={}):
         '''
         Evaluate the model on test or valid datasets
         '''
@@ -635,7 +635,7 @@ class KGEModel(nn.Module):
             #Otherwise use standard (filtered) MRR, MR, HITS@1, HITS@3, and HITS@10 metrics
             #Prepare dataloader for evaluation
             test_dataset_list = []
-            if args.task == 'link_prediction' or args.task == 'all':
+            if args.task in ['link_prediction', 'all']:
                 test_dataloader_head = DataLoader(
                     TestDataset(
                         test_triples, 
@@ -663,7 +663,7 @@ class KGEModel(nn.Module):
                 )
 
                 test_dataset_list.extend([test_dataloader_head, test_dataloader_tail])
-            if args.task == 'relation_prediction' or args.task == 'all':
+            if args.task in ['relation_prediction', 'all']:
                 test_dataloader_relation = DataLoader(
                     TestDataset(
                         test_triples, 
@@ -677,6 +677,7 @@ class KGEModel(nn.Module):
                 test_dataset_list.extend([test_dataloader_relation])
             
             logs = []
+            semak_logs = []  # <-- Will store only head/tail-batch samples with Sem@K
 
             step = 0
             total_steps = sum([len(dataset) for dataset in test_dataset_list])
@@ -693,6 +694,11 @@ class KGEModel(nn.Module):
 
                         # during test we don't need to calculate the mse loss
                         score, _ = model((positive_sample, negative_sample), mode)
+
+                        # Save unfiltered argsort for Sem@K BEFORE adding filter bias
+                        argsort_raw = torch.argsort(score, dim=1, descending=True)
+
+                        # Add filter bias for MRR, Hits, etc.
                         score += filter_bias
 
                         #Explicitly sort all the entities to ensure that there is no test exposure bias
@@ -714,22 +720,58 @@ class KGEModel(nn.Module):
 
                             #ranking + 1 is the true ranking used in evaluation metrics
                             ranking = 1 + ranking.item()
-                            logs.append({
+                            log_entry = {
                                 'MRR': 1.0/ranking,
                                 'MR': float(ranking),
                                 'HITS@1': 1.0 if ranking <= 1 else 0.0,
                                 'HITS@3': 1.0 if ranking <= 3 else 0.0,
                                 'HITS@10': 1.0 if ranking <= 10 else 0.0,
-                            })
+                            }
+
+                            # Sem@K evaluation using raw metrics (only for head/tail prediction)
+                            if mode in {"head-batch", "tail-batch"} and \
+                                "domain_constraints" in constraints and \
+                                "range_constraints" in constraints:
+                                rel_id = positive_sample[i, 1].item()
+                                constraint_set = (
+                                    constraints["domain_constraints"].get(rel_id, set())
+                                    if mode == 'head-batch' else
+                                    constraints["range_constraints"].get(rel_id, set())
+                                )
+                                N = len(constraint_set)
+
+                                if N > 0:
+                                    for K in [1, 3, 10]:
+                                        topk_preds = argsort_raw[i, :K].tolist()
+                                        in_k = sum(1 for pred in topk_preds if pred in constraint_set)
+                                        score_k = in_k / K
+                                        semak = score_k * min(1.0, K / N)
+                                        log_entry[f'Generalized-Sem@{K}'] = semak
+                                else:
+                                    for K in [1, 3, 10]:
+                                        log_entry[f'Generalized-Sem@{K}'] = None
+                                
+                            logs.append(log_entry)
 
                         if step % args.test_log_steps == 0:
                             logging.info('Evaluating the model... (%d/%d)' % (step, total_steps))
 
                         step += 1
 
+            # Separate base metrics from Sem@K
+            exclude_keys = {f'Generalized-Sem@{K}' for K in [1, 3, 10]}
+            all_keys = set(logs[0].keys())
+            base_keys = all_keys - exclude_keys
+
             metrics = {}
-            for metric in logs[0].keys():
+            for metric in base_keys:
                 metrics[metric] = sum([log[metric] for log in logs])/len(logs)
+
+            # Aggregate Generalized-Sem@K values
+            for K in [1, 3, 10]:
+                semak_key = f'Generalized-Sem@{K}'
+                semak_values = [log[semak_key] for log in logs if semak_key in log and log[semak_key] is not None]
+                if semak_values: metrics[semak_key] = sum(semak_values) / len(semak_values)
 
         return metrics
 
