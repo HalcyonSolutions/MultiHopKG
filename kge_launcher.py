@@ -78,7 +78,7 @@ def main():
             cmd += ["--double_entity_embedding"]
 
         if str(config.clean_up).lower() == "true":
-            cmd += ["--clean_up"]
+            cmd += ["--clean_up", "--clean_up_folder"]
 
         if str(config.track).lower() == "true":
             cmd += ["-track", "--wandb_project", config.wandb_project]

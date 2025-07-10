@@ -17,7 +17,7 @@ import torch
 
 from torch.utils.data import DataLoader
 
-from multihopkg.exogenous.sun_models import KGEModel, save_model, update_best_model, clean_up_checkpoints, save_configs
+from multihopkg.exogenous.sun_models import KGEModel, save_model, update_best_model, clean_up_checkpoints, clean_up_folder, save_configs
 from multihopkg.utils.data_splitting import read_triple
 
 from multihopkg.utils.setup import set_seeds
@@ -67,6 +67,7 @@ def parse_args(args=None):
     
     parser.add_argument('--save_checkpoint_steps', default=10000, type=int)
     parser.add_argument('--clean_up', action='store_true', help='Clean up checkpoints after training')
+    parser.add_argument('--clean_up_folder', default='store_true', type=str, help='Remove the folder for the model if it is empty after training')
     parser.add_argument('--valid_steps', default=10000, type=int)
     parser.add_argument('--log_steps', default=100, type=int, help='train log every xx steps')
     parser.add_argument('--test_log_steps', default=1000, type=int, help='valid/test log every xx steps')
@@ -507,6 +508,8 @@ def main(args):
             
             if getattr(args, 'clean_up', False):
                 clean_up_checkpoints(args.save_path)
+            if getattr(args, 'clean_up_folder', False):
+                clean_up_folder(args.save_path, ignore_files_types=['.log']) # Remove empty folder or folder with only ignored files (.log)
         
     if args.do_valid:
         logging.info('Evaluating on Valid Dataset...')

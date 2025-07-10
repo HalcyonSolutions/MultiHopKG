@@ -10,7 +10,7 @@ import shutil
 
 import logging
 from collections.abc import Mapping
-from typing import Any, Union
+from typing import Any, Union, List
 
 import numpy as np
 
@@ -1237,8 +1237,30 @@ def update_best_model(model, optimizer, save_variable_list, save_dir,
         logging.info(f"Current {metric_name}: {metric_value:.5f} did not improve over best {metric_name}: {best_metric_value:.5f}. Best model remains at: {best_model_path}")
     return best_metric_value, best_model_path
 
-def clean_up_checkpoints(save_path):
+def clean_up_checkpoints(save_path: str) -> None:
     checkpoints_dir = os.path.join(save_path, "checkpoints")
     if os.path.exists(checkpoints_dir):
         shutil.rmtree(checkpoints_dir)
         logging.info(f"Checkpoints directory '{checkpoints_dir}' has been deleted.")
+
+def clean_up_folder(save_path: str, ignore_files_types: List[str]=['.log']) -> None:
+    """
+    Clean up the folder by removing all files and subdirectories.
+    """
+    # Check if folder is empty or if it contains only ignored files, if it does, erase it
+    if not os.path.exists(save_path):
+        print(f"Folder '{save_path}' does not exist. No action taken.")
+        return
+    
+    if not os.listdir(save_path):
+        # If folder exists but is empty, erase it
+        shutil.rmtree(save_path)
+        print(f"Folder '{save_path}' has been deleted because it was empty.")
+
+    # List all files and directories in the folder, if it contains only ignored files, erase it
+    files_and_dirs = os.listdir(save_path)
+    if all(
+        file.endswith(tuple(ignore_files_types)) for file in files_and_dirs
+    ):
+        shutil.rmtree(save_path)
+        print(f"Folder '{save_path}' has been deleted because it contained only ignored files: {ignore_files_types}.")
