@@ -24,6 +24,7 @@ from multihopkg.utils.setup import set_seeds
 
 from multihopkg.datasets import TrainDataset
 from multihopkg.datasets import BidirectionalOneShotIterator, MultiTaskIterator, OneShotIterator, build_type_constraints
+# os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
@@ -72,8 +73,9 @@ def parse_args(args=None):
     parser.add_argument('--log_steps', default=100, type=int, help='train log every xx steps')
     parser.add_argument('--test_log_steps', default=1000, type=int, help='valid/test log every xx steps')
     
-    parser.add_argument('--task', type=str, choices=['link_prediction', 'relation_prediction', 'all'], default='link_prediction',
-                        help='Specify which task to train: link_prediction, relation-prediction, or all (multi-task)')
+    parser.add_argument('--task', type=str, choices=['link_prediction', 'relation_prediction', 'domain_prediction', 'entity_neighborhood_prediction', 'relation_neighborhood_prediction', 'all'], default='link_prediction',
+                        help='Specify which task to train: link_prediction, relation_prediction, domain_prediction, ' \
+                        'entity_neighborhood_prediction, relation_neighborhood_prediction, or all (multi-task)')
 
     parser.add_argument('--nentity', type=int, default=0, help='DO NOT MANUALLY SET')
     parser.add_argument('--nrelation', type=int, default=0, help='DO NOT MANUALLY SET')
@@ -195,7 +197,7 @@ def main(args):
 
     if args.timestamp is None:
         local_time = time.localtime()
-        args.timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+        args.timestamp = time.strftime("%Y%m%d_%H%M%S", local_time)
 
     if args.track:
         if args.wandb_project == '':
@@ -291,6 +293,8 @@ def main(args):
         autoencoder_flag=args.autoencoder_flag,
         autoencoder_hidden_dim=args.autoencoder_hidden_dim,
         autoencoder_lambda=args.autoencoder_lambda,
+        wildcard_entity=args.task in ['all', 'domain_prediction', 'relation_neighborhood_prediction'],
+        wildcard_relation=args.task in ['all', 'relation_neighborhood_prediction']
     )
     
     logging.info('Model Parameter Configuration:')
@@ -303,7 +307,7 @@ def main(args):
     if args.do_train:
         # Set training dataloader iterator
         if args.task == 'all':
-            modes = ['head-batch', 'tail-batch', 'relation-batch']
+            modes = ['head-batch', 'tail-batch', 'relation-batch', 'domain-batch', 'range-batch', 'nbe-head-batch', 'nbe-tail-batch', 'nbr-head-batch', 'nbr-tail-batch']
             dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode)) for mode in modes]
             train_iterator = MultiTaskIterator(dataloaders)
 
@@ -315,6 +319,22 @@ def main(args):
         elif args.task == 'relation_prediction':
             train_dataloader_relation = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'relation-batch')
             train_iterator = OneShotIterator(train_dataloader_relation)
+        
+        elif args.task == 'domain_prediction':
+            train_dataloader_domain = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'domain-batch')
+            train_dataloader_range = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'range-batch')
+            train_iterator = BidirectionalOneShotIterator(train_dataloader_domain, train_dataloader_range)
+        
+        elif args.task == 'entity_neighborhood_prediction':
+            train_dataloader_nbe_head = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbe-head-batch')
+            train_dataloader_nbe_tail = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbe-tail-batch')
+            train_iterator = BidirectionalOneShotIterator(train_dataloader_nbe_head, train_dataloader_nbe_tail)
+        
+        elif args.task == 'relation_neighborhood_prediction':
+            train_dataloader_nbr_head = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbr-head-batch')
+            train_dataloader_nbr_tail = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbr-tail-batch')
+            train_iterator = BidirectionalOneShotIterator(train_dataloader_nbr_head, train_dataloader_nbr_tail)
+
         else:
             raise ValueError(f"Unknown task: {args.task}. Supported tasks are 'link_prediction' and 'relation-prediction'.")
         

@@ -13,9 +13,12 @@ class TestDataset(Dataset):
     def __init__(self, triples, all_true_triples, nentity, nrelation, mode):
         self.len = len(triples)
         self.triple_set = set(all_true_triples)
+        self.domain_set = set((h, r) for h, r, _ in all_true_triples)
+        self.range_set = set((r, t) for _, r, t in all_true_triples)
+        self.neighbor_set = set((h, t) for h, _, t in all_true_triples)
         self.triples = triples
-        self.nentity = nentity
-        self.nrelation = nrelation
+        self.nentity = nentity # do not include the wildcard entities
+        self.nrelation = nrelation # do not include the wildcard relation
         self.mode = mode
 
     def __len__(self):
@@ -24,6 +27,7 @@ class TestDataset(Dataset):
     def __getitem__(self, idx):
         head, relation, tail = self.triples[idx]
 
+        # TODO: Inspect if wildcard id need to be replaced here
         if self.mode == 'head-batch':
             tmp = [(0, candidate_head) if (candidate_head, relation, tail) not in self.triple_set
                    else (-1, head) for candidate_head in range(self.nentity)]
@@ -36,10 +40,40 @@ class TestDataset(Dataset):
             tmp = [(0, candidate_rel) if (head, candidate_rel, tail) not in self.triple_set
                 else (-1, relation) for candidate_rel in range(self.nrelation)]
             tmp[relation] = (0, relation)
+        elif self.mode == 'domain-batch':
+            tmp = [(0, candidate_head) if (candidate_head, relation) not in self.domain_set
+                   else (-1, head) for candidate_head in range(self.nentity)]
+            tmp[head] = (0, head)
+            tail = self.nentity + 1  # Use a wildcard tail entity
+        elif self.mode == 'range-batch':
+            tmp = [(0, candidate_tail) if (relation, candidate_tail) not in self.range_set
+                   else (-1, tail) for candidate_tail in range(self.nentity)]
+            tmp[tail] = (0, tail)
+            head = self.nentity  # Use a wildcard head entity
+        elif self.mode == 'nbe-head-batch':
+            tmp = [(0, candidate_head) if (candidate_head, tail) not in self.neighbor_set
+                   else (-1, head) for candidate_head in range(self.nentity)]
+            tmp[head] = (0, head)
+            relation = self.nrelation  # Use a wildcard relation
+        elif self.mode == 'nbe-tail-batch':
+            tmp = [(0, candidate_tail) if (head, candidate_tail) not in self.neighbor_set
+                   else (-1, tail) for candidate_tail in range(self.nentity)]
+            tmp[tail] = (0, tail)
+            relation = self.nrelation # Use a wildcard relation
+        elif self.mode == 'nbr-head-batch':
+            tmp = [(0, candidate_rel) if (head, candidate_rel) not in self.domain_set
+                   else (-1, relation) for candidate_rel in range(self.nrelation)]
+            tmp[relation] = (0, relation)
+            tail = self.nentity + 1  # Use a wildcard tail entity
+        elif self.mode == 'nbr-tail-batch':
+            tmp = [(0, candidate_rel) if (candidate_rel, tail) not in self.range_set
+                   else (-1, relation) for candidate_rel in range(self.nrelation)]
+            tmp[relation] = (0, relation)
+            head = self.nentity  # Use a wildcard head entity
         else:
             raise ValueError('negative batch mode %s not supported' % self.mode)
-            
-        tmp = torch.LongTensor(tmp)            
+        
+        tmp = torch.LongTensor(tmp)         
         filter_bias = tmp[:, 0].float()
         negative_sample = tmp[:, 1]
 
@@ -60,12 +94,21 @@ class TrainDataset(Dataset):
         self.len = len(triples)
         self.triples = triples
         self.triple_set = set(triples)
-        self.nentity = nentity
-        self.nrelation = nrelation
+        self.nentity = nentity # do not include the wildcard entities
+        self.nrelation = nrelation # do not include the wildcard relation
         self.negative_sample_size = negative_sample_size
         self.mode = mode
         self.count, self.rel_count = self.count_frequency(triples)
-        self.true_head, self.true_tail, self.true_rels = self.get_true_head_and_tail(self.triples)
+        if self.mode in ['head-batch', 'relation-batch', 'tail-batch']:
+            self.true_head, self.true_tail, self.true_rels = self.get_true_head_and_tail(self.triples)
+        elif self.mode in ['domain-batch', 'range-batch']:
+            self.true_domain, self.true_range = self.get_true_domain_and_range(self.triples)
+        elif self.mode in ['nbe-head-batch', 'nbe-tail-batch']:
+            self.true_neighbor_head, self.true_neighbor_tail = self.get_true_entity_neighbors(self.triples)
+        elif self.mode in ['nbr-head-batch', 'nbr-tail-batch']:
+            self.true_relation_head, self.true_relation_tail = self.get_true_relation_neighbors(self.triples)
+        else:
+            raise ValueError('Training batch mode %s not supported' % self.mode)
         
     def __len__(self):
         return self.len
@@ -78,18 +121,34 @@ class TrainDataset(Dataset):
         negative_sample_list = []
         negative_sample_size = 0
 
-        if self.mode == 'head-batch' or self.mode == 'tail-batch':
+        if self.mode in ['head-batch', 'tail-batch', 'domain-batch', 'range-batch', 'nbr-head-batch', 'nbr-tail-batch']:
             subsampling_weight = self.count[(head, relation)] + self.count[(tail, -relation-1)]
-        else:
+        elif self.mode in ['relation-batch', 'nbe-head-batch', 'nbe-tail-batch']:
             subsampling_weight = self.rel_count[(head, tail)]
+        else:
+            raise ValueError('Training batch mode %s not supported' % self.mode)
+        
         subsampling_weight = torch.sqrt(1 / torch.Tensor([subsampling_weight]))
+
+        if self.mode in ['domain-batch', 'nbr-head-batch']:
+            # Use a wildcard tail entity
+            tail = self.nentity + 1
+            positive_sample = (head, relation, tail)
+        elif self.mode in ['range-batch', 'nbr-tail-batch']:
+            # Use a wildcard head entity
+            head = self.nentity
+            positive_sample = (head, relation, tail)
+        elif self.mode in ['nbe-head-batch', 'nbe-tail-batch']:
+            # Use a wildcard relation
+            relation = self.nrelation
+            positive_sample = (head, relation, tail)
 
         while negative_sample_size < self.negative_sample_size:
             if self.mode == 'head-batch':
                 negative_sample = np.random.randint(self.nentity, size=self.negative_sample_size*2)
                 mask = np.in1d(
                     negative_sample, 
-                    self.true_head[(relation, tail)], 
+                    self.true_head[(relation, tail)], # guessing the head
                     assume_unique=True, 
                     invert=True
                 )
@@ -97,7 +156,7 @@ class TrainDataset(Dataset):
                 negative_sample = np.random.randint(self.nentity, size=self.negative_sample_size*2)
                 mask = np.in1d(
                     negative_sample, 
-                    self.true_tail[(head, relation)], 
+                    self.true_tail[(head, relation)], # guessing the tail
                     assume_unique=True, 
                     invert=True
                 )
@@ -105,7 +164,57 @@ class TrainDataset(Dataset):
                 negative_sample = np.random.randint(self.nrelation, size=self.negative_sample_size * 2)
                 mask = np.in1d(
                     negative_sample, 
-                    self.true_rels[(head, tail)], 
+                    self.true_rels[(head, tail)], # guessing the relation
+                    assume_unique=True, 
+                    invert=True
+                )
+            elif self.mode == 'domain-batch':
+                # Do not consider the wildcard entities in negative sampling
+                negative_sample = np.random.randint(self.nentity, size=self.negative_sample_size * 2)
+                mask = np.in1d(
+                    negative_sample, 
+                    self.true_domain[relation], # guessing the head
+                    assume_unique=True, 
+                    invert=True
+                )
+            elif self.mode == 'range-batch':
+                # Do not consider the wildcard entities in negative sampling
+                negative_sample = np.random.randint(self.nentity, size=self.negative_sample_size * 2)
+                mask = np.in1d(
+                    negative_sample, 
+                    self.true_range[relation], # guessing the tail
+                    assume_unique=True, 
+                    invert=True
+                )
+            elif self.mode == 'nbe-head-batch':
+                negative_sample = np.random.randint(self.nentity, size=self.negative_sample_size * 2)
+                mask = np.in1d(
+                    negative_sample,  
+                    self.true_neighbor_head[tail], # guessing the head
+                    assume_unique=True, 
+                    invert=True
+                )
+            elif self.mode == 'nbe-tail-batch':
+                negative_sample = np.random.randint(self.nentity, size=self.negative_sample_size * 2)
+                mask = np.in1d(
+                    negative_sample, 
+                    self.true_neighbor_tail[head], # guessing the tail
+                    assume_unique=True, 
+                    invert=True
+                )
+            elif self.mode == 'nbr-head-batch':
+                negative_sample = np.random.randint(self.nrelation, size=self.negative_sample_size * 2)
+                mask = np.in1d(
+                    negative_sample, 
+                    self.true_relation_head[head], # guessing the relation
+                    assume_unique=True, 
+                    invert=True
+                )
+            elif self.mode == 'nbr-tail-batch':
+                negative_sample = np.random.randint(self.nrelation, size=self.negative_sample_size * 2)
+                mask = np.in1d(
+                    negative_sample, 
+                    self.true_relation_tail[tail], # guessing the relation
                     assume_unique=True, 
                     invert=True
                 )
@@ -164,29 +273,83 @@ class TrainDataset(Dataset):
         be used to filter these true triples for negative sampling
         '''
         
-        true_head = {}
-        true_tail = {}
-        true_rels = {}
+        true_head = defaultdict(set)
+        true_tail = defaultdict(set)
+        true_rels = defaultdict(set)
 
         for head, relation, tail in triples:
-            if (head, relation) not in true_tail:
-                true_tail[(head, relation)] = []
-            true_tail[(head, relation)].append(tail)
-            if (relation, tail) not in true_head:
-                true_head[(relation, tail)] = []
-            true_head[(relation, tail)].append(head)
-            if (head, tail) not in true_rels:
-                true_rels[(head, tail)] = []
-            true_rels[(head, tail)].append(relation)
+            true_tail[(head, relation)].add(tail)
+            true_head[(relation, tail)].add(head)
+            true_rels[(head, tail)].add(relation)
 
         for relation, tail in true_head:
-            true_head[(relation, tail)] = np.array(list(set(true_head[(relation, tail)])))
+            true_head[(relation, tail)] = np.array(list(true_head[(relation, tail)]))
         for head, relation in true_tail:
-            true_tail[(head, relation)] = np.array(list(set(true_tail[(head, relation)])))
+            true_tail[(head, relation)] = np.array(list(true_tail[(head, relation)]))
         for head, tail in true_rels:
-            true_rels[(head, tail)] = np.array(list(set(true_rels[(head, tail)])))                 
+            true_rels[(head, tail)] = np.array(list(true_rels[(head, tail)]))                 
 
         return true_head, true_tail, true_rels
+    
+    @staticmethod
+    def get_true_domain_and_range(triples):
+        """
+        Build a dictionary of true triples that will
+        be used to filter these true triples for negative sampling
+        """
+        true_domain = defaultdict(set)
+        true_range = defaultdict(set)
+
+        for head, relation, tail in triples:
+            true_domain[relation].add(head)
+            true_range[relation].add(tail)
+
+        for relation in true_domain:
+            true_domain[relation] = np.array(list(true_domain[relation]))
+        for relation in true_range:
+            true_range[relation] = np.array(list(true_range[relation]))
+
+        return true_domain, true_range
+
+    @staticmethod
+    def get_true_entity_neighbors(triples):
+        """
+        Build a dictionary of true triples that will
+        be used to filter these true triples for negative sampling
+        """
+        true_neighbor_head = defaultdict(set)
+        true_neighbor_tail = defaultdict(set)
+
+        for head, _, tail in triples:
+            true_neighbor_head[tail].add(head)
+            true_neighbor_tail[head].add(tail)
+
+        for tail in true_neighbor_head:
+            true_neighbor_head[tail] = np.array(list(true_neighbor_head[tail]))
+        for head in true_neighbor_tail:
+            true_neighbor_tail[head] = np.array(list(true_neighbor_tail[head]))
+
+        return true_neighbor_head, true_neighbor_tail
+
+    @staticmethod
+    def get_true_relation_neighbors(triples):
+        """
+        Build a dictionary of true triples that will
+        be used to filter these true triples for negative sampling
+        """
+        true_relation_head = defaultdict(set)
+        true_relation_tail = defaultdict(set)
+
+        for head, relation, tail in triples:
+            true_relation_head[head].add(relation)
+            true_relation_tail[tail].add(relation)
+
+        for head in true_relation_head:
+            true_relation_head[head] = np.array(list(true_relation_head[head]))
+        for tail in true_relation_tail:
+            true_relation_tail[tail] = np.array(list(true_relation_tail[tail]))
+
+        return true_relation_head, true_relation_tail
 
 class OneShotIterator(object):
     def __init__(self, dataloader):

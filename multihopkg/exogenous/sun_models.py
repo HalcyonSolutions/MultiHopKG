@@ -41,11 +41,13 @@ class KGEModel(nn.Module):
         autoencoder_flag = False,
         autoencoder_hidden_dim = 50,
         autoencoder_lambda = 0.1,
+        wildcard_entity: bool = False,
+        wildcard_relation: bool = False,
     ):
         super(KGEModel, self).__init__()
         self.model_name = model_name
-        self.nentity = nentity
-        self.nrelation = nrelation
+        self.nentity = nentity if not wildcard_entity else nentity + 2  # +2 for wildcard entity
+        self.nrelation = nrelation if not wildcard_relation else nrelation + 1 # +1 for wildcard relation
         self.hidden_dim = hidden_dim
         self.epsilon = 2.0
 
@@ -67,25 +69,24 @@ class KGEModel(nn.Module):
         self.entity_dim = hidden_dim*2 if double_entity_embedding else hidden_dim
         self.relation_dim = hidden_dim*2 if double_relation_embedding else hidden_dim
         
-        self.entity_embedding = nn.Parameter(torch.zeros(nentity, self.entity_dim))
+        self.entity_embedding = nn.Parameter(torch.zeros(self.nentity, self.entity_dim))
         nn.init.uniform_(
             tensor=self.entity_embedding, 
             a=-self.embedding_range.item(), 
             b=self.embedding_range.item()
         )
         
-        self.relation_embedding = nn.Parameter(torch.zeros(nrelation, self.relation_dim))
+        self.relation_embedding = nn.Parameter(torch.zeros(self.nrelation, self.relation_dim))
         nn.init.uniform_(
             tensor=self.relation_embedding, 
             a=-self.embedding_range.item(), 
             b=self.embedding_range.item()
         )
-        
         if model_name == 'pRotatE':
             self.modulus = nn.Parameter(torch.Tensor([[0.5 * self.embedding_range.item()]]))
 
         if model_name == 'TransH':
-            self.norm_vector = nn.Parameter(torch.zeros(nrelation, self.relation_dim))
+            self.norm_vector = nn.Parameter(torch.zeros(self.nrelation, self.relation_dim))
 
             nn.init.uniform_(
                 tensor=self.norm_vector,
@@ -204,6 +205,8 @@ class KGEModel(nn.Module):
         gamma: float,
         state_dict: Mapping[str, Any],
         norm_embedding: Union[np.ndarray, None] = None,
+        uses_wildcard_entity: bool = False,
+        uses_wildcard_relation: bool = False,
     ) -> 'KGEModel':
         """
         Create a KGEModel from pretrained embeddings.
@@ -215,6 +218,8 @@ class KGEModel(nn.Module):
             entity_embedding: Pretrained entity embeddings as numpy array
             relation_embedding: Pretrained relation embeddings as numpy array
             gamma: Margin value for distance-based loss functions
+            state_dict: State dictionary containing model parameters
+            norm_embedding: Optional numpy array for normal vectors (used in TransH)
             
         Returns:
             Initialized KGEModel with pretrained embeddings
@@ -227,8 +232,8 @@ class KGEModel(nn.Module):
         double_entity_embedding = (model_name in ['RotatE', 'ComplEx'])
         double_relation_embedding = (model_name == 'ComplEx')
         
-        nentity = entity_embedding.shape[0]
-        nrelation = relation_embedding.shape[0]
+        nentity = entity_embedding.shape[0] if not uses_wildcard_entity else entity_embedding.shape[0] - 2
+        nrelation = relation_embedding.shape[0] if not uses_wildcard_relation else relation_embedding.shape[0] - 1
 
         # Calculate hidden dim based on entity dimension and embedding type
         if double_entity_embedding:
@@ -245,6 +250,8 @@ class KGEModel(nn.Module):
             gamma=gamma,
             double_entity_embedding=double_entity_embedding,
             double_relation_embedding=double_relation_embedding,
+            uses_wildcard_entity=uses_wildcard_entity,
+            uses_wildcard_relation=uses_wildcard_relation,
         )
         
         # Load pretrained embeddings
@@ -273,6 +280,10 @@ class KGEModel(nn.Module):
         Because negative samples and positive samples usually share two elements 
         in their triple ((head, relation) or (relation, tail)).
         '''
+
+        # NOTE: If using wildcard entities or relations, this forward function assumes that
+        # the last two entities are the wildcard entities and the last relation is the wildcard relation.
+        # Also, it assumes the swapping has already been performed by the dataset class.
 
         if mode == 'single': # Used for Training Positive Samples Only
             batch_size, negative_sample_size = sample.size(0), 1
@@ -303,7 +314,7 @@ class KGEModel(nn.Module):
                     index=sample[:,1]
                 ).unsqueeze(1)
             
-        elif mode == 'head-batch': # Used for Training Negative Samples Only
+        elif mode in ['head-batch', 'domain-batch', 'nbe-head-batch']: # Used for Training Negative Samples Only, predicting heads
             tail_part, head_part = sample
             batch_size, negative_sample_size = head_part.size(0), head_part.size(1)
             
@@ -333,10 +344,10 @@ class KGEModel(nn.Module):
                     index=tail_part[:, 1]
                 ).unsqueeze(1)
             
-        elif mode == 'tail-batch': # Used for Training Negative Samples Only
+        elif mode in ['tail-batch', 'range-batch', 'nbe-tail-batch']: # Used for Training Negative Samples Only, predicting tail
             head_part, tail_part = sample
             batch_size, negative_sample_size = tail_part.size(0), tail_part.size(1)
-            
+
             head = torch.index_select(
                 self.entity_embedding, 
                 dim=0, 
@@ -362,7 +373,8 @@ class KGEModel(nn.Module):
                     dim=0, 
                     index=head_part[:, 1]
                 ).unsqueeze(1)
-        elif mode == 'relation-batch': # Used for Training Negative Samples Only
+
+        elif mode in ['relation-batch', 'nbr-head-batch', 'nbr-tail-batch']: # Used for Training Negative Samples Only, predicting relations
             head_part, relation_part = sample
             batch_size, negative_sample_size = relation_part.size(0), relation_part.size(1)
 
@@ -499,7 +511,6 @@ class KGEModel(nn.Module):
     def pRotatE(self, head, relation, tail, mode):
         
         #Make phases of entities and relations uniformly distributed in [-pi, pi]
-
         phase_head = head/(self.embedding_range.item()/torch.pi)
         phase_relation = relation/(self.embedding_range.item()/torch.pi)
         phase_tail = tail/(self.embedding_range.item()/torch.pi)
@@ -663,6 +674,7 @@ class KGEModel(nn.Module):
                 )
 
                 test_dataset_list.extend([test_dataloader_head, test_dataloader_tail])
+            
             if args.task in ['relation_prediction', 'all']:
                 test_dataloader_relation = DataLoader(
                     TestDataset(
@@ -676,6 +688,80 @@ class KGEModel(nn.Module):
                 )
                 test_dataset_list.extend([test_dataloader_relation])
             
+            if args.task in ['domain_prediction', 'all']:
+                test_dataloader_domain = DataLoader(
+                    TestDataset(
+                        test_triples, 
+                        all_true_triples, 
+                        args.nentity, 
+                        args.nrelation, 'domain-batch'), 
+                    batch_size=args.test_batch_size,
+                    num_workers=max(1, args.cpu_num//2),
+                    collate_fn=TestDataset.collate_fn
+                )
+
+                test_dataloader_range = DataLoader(
+                    TestDataset(
+                        test_triples, 
+                        all_true_triples, 
+                        args.nentity, 
+                        args.nrelation, 'range-batch'), 
+                    batch_size=args.test_batch_size,
+                    num_workers=max(1, args.cpu_num//2),
+                    collate_fn=TestDataset.collate_fn
+                )
+                test_dataset_list.extend([test_dataloader_domain, test_dataloader_range])
+
+            if args.task in ['entity_neighborhood_prediction', 'all']:
+                test_dataloader_nbe_head = DataLoader(
+                    TestDataset(
+                        test_triples, 
+                        all_true_triples, 
+                        args.nentity, 
+                        args.nrelation, 'nbe-head-batch'), 
+                    batch_size=args.test_batch_size,
+                    num_workers=max(1, args.cpu_num//2),
+                    collate_fn=TestDataset.collate_fn
+                )
+                
+                test_dataloader_nbe_tail = DataLoader(
+                    TestDataset(
+                        test_triples, 
+                        all_true_triples, 
+                        args.nentity, 
+                        args.nrelation, 'nbe-tail-batch'), 
+                    batch_size=args.test_batch_size,
+                    num_workers=max(1, args.cpu_num//2),
+                    collate_fn=TestDataset.collate_fn
+                )
+                
+                test_dataset_list.extend([test_dataloader_nbe_head, test_dataloader_nbe_tail])
+
+            if args.task in ['relation_neighborhood_prediction', 'all']:
+                test_dataloader_nbr_head = DataLoader(
+                    TestDataset(
+                        test_triples, 
+                        all_true_triples, 
+                        args.nentity, 
+                        args.nrelation, 'nbr-head-batch'), 
+                    batch_size=args.test_batch_size,
+                    num_workers=max(1, args.cpu_num//2),
+                    collate_fn=TestDataset.collate_fn
+                )
+                
+                test_dataloader_nbr_tail = DataLoader(
+                    TestDataset(
+                        test_triples, 
+                        all_true_triples, 
+                        args.nentity, 
+                        args.nrelation, 'nbr-tail-batch'), 
+                    batch_size=args.test_batch_size,
+                    num_workers=max(1, args.cpu_num//2),
+                    collate_fn=TestDataset.collate_fn
+                )
+                
+                test_dataset_list.extend([test_dataloader_nbr_head, test_dataloader_nbr_tail])
+
             logs = []
             semak_logs = []  # <-- Will store only head/tail-batch samples with Sem@K
 
@@ -704,11 +790,11 @@ class KGEModel(nn.Module):
                         #Explicitly sort all the entities to ensure that there is no test exposure bias
                         argsort = torch.argsort(score, dim = 1, descending=True)
 
-                        if mode == 'head-batch':
+                        if mode in ['head-batch', 'domain-batch', 'nbe-head-batch']:
                             positive_arg = positive_sample[:, 0]
-                        elif mode == 'tail-batch':
+                        elif mode in ['tail-batch', 'range-batch', 'nbe-tail-batch']:
                             positive_arg = positive_sample[:, 2]
-                        elif mode == 'relation-batch':
+                        elif mode in ['relation-batch', 'nbr-head-batch', 'nbr-tail-batch']:
                             positive_arg = positive_sample[:, 1]
                         else:
                             raise ValueError('mode %s not supported' % mode)

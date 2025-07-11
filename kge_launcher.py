@@ -43,7 +43,7 @@ def main():
 
     if config.mode == "train":
         local_time = time.localtime()
-        timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+        timestamp = time.strftime("%Y%m%d_%H%M%S", local_time)
 
         cmd = [
             "python", "kge_train.py",
