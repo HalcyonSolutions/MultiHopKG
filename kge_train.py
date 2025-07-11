@@ -11,6 +11,7 @@ import os
 import random
 import wandb
 import time
+import re
 
 import numpy as np
 import torch
@@ -73,7 +74,7 @@ def parse_args(args=None):
     parser.add_argument('--log_steps', default=100, type=int, help='train log every xx steps')
     parser.add_argument('--test_log_steps', default=1000, type=int, help='valid/test log every xx steps')
     
-    parser.add_argument('--task', type=str, choices=['link_prediction', 'relation_prediction', 'domain_prediction', 'entity_neighborhood_prediction', 'relation_neighborhood_prediction', 'all'], default='link_prediction',
+    parser.add_argument('--task', type=str, choices=['link_prediction', 'relation_prediction', 'domain_prediction', 'entity_neighborhood_prediction', 'relation_neighborhood_prediction', 'basic', 'all'], default='link_prediction',
                         help='Specify which task to train: link_prediction, relation_prediction, domain_prediction, ' \
                         'entity_neighborhood_prediction, relation_neighborhood_prediction, or all (multi-task)')
 
@@ -140,11 +141,20 @@ def set_logger(args):
     console.setFormatter(formatter)
     logging.getLogger('').addHandler(console)
 
+def sort_key(metric_name):
+    """
+    Custom sort key to handle metrics with numbers, like HITS@10.
+    It splits the metric name into text and number parts for correct sorting.
+    """
+    parts = re.split(r'(\d+)', metric_name)
+    # Convert numeric parts to integers for proper numeric sorting
+    return [int(part) if part.isdigit() else part.lower() for part in parts]
+
 def log_metrics(mode, step, metrics):
     '''
     Print the evaluation logs
     '''
-    for metric in metrics:
+    for metric in sorted(metrics.keys(), key=sort_key):
         logging.info('%s %s at step %d: %f' % (mode, metric, step, metrics[metric]))
 
     # Log to wandb as well
@@ -308,6 +318,11 @@ def main(args):
         # Set training dataloader iterator
         if args.task == 'all':
             modes = ['head-batch', 'tail-batch', 'relation-batch', 'domain-batch', 'range-batch', 'nbe-head-batch', 'nbe-tail-batch', 'nbr-head-batch', 'nbr-tail-batch']
+            dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode)) for mode in modes]
+            train_iterator = MultiTaskIterator(dataloaders)
+        
+        elif args.task == 'basic':
+            modes = ['head-batch', 'tail-batch', 'relation-batch']
             dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode)) for mode in modes]
             train_iterator = MultiTaskIterator(dataloaders)
 
