@@ -78,6 +78,11 @@ def parse_args(args=None):
     parser.add_argument('--task', type=str, choices=['link_prediction', 'relation_prediction', 'domain_prediction', 'entity_neighborhood_prediction', 'relation_neighborhood_prediction', 'basic', 'all'], default='link_prediction',
                         help='Specify which task to train: link_prediction, relation_prediction, domain_prediction, ' \
                         'entity_neighborhood_prediction, relation_neighborhood_prediction, or all (multi-task)')
+    parser.add_argument('--lambda_lp', default=1.0, type=float, help='Lambda for link prediction loss')
+    parser.add_argument('--lambda_rp', default=1.0, type=float, help='Lambda for relation prediction loss')
+    parser.add_argument('--lambda_dp', default=1.0, type=float, help='Lambda for domain prediction loss')
+    parser.add_argument('--lambda_nbe', default=1.0, type=float, help='Lambda for entity neighborhood prediction loss')
+    parser.add_argument('--lambda_nbr', default=1.0, type=float, help='Lambda for relation neighborhood prediction loss')
 
     parser.add_argument('--nentity', type=int, default=0, help='DO NOT MANUALLY SET')
     parser.add_argument('--nrelation', type=int, default=0, help='DO NOT MANUALLY SET')
@@ -191,9 +196,9 @@ def reload_embeddings_only(kge_model, init_checkpoint, reload_entities=False, re
     kge_model.load_state_dict(current_state, strict=False)
     logging.info(f"Reloaded embeddings: {', '.join(reload_keys)} from {checkpoint_path}")
 
-def create_dataloader(train_triples, nentity, nrelation, negative_sample_size, batch_size, cpu_num, mode):
+def create_dataloader(train_triples, nentity, nrelation, negative_sample_size, batch_size, cpu_num, mode, lambda_loss):
     return DataLoader(
-        TrainDataset(train_triples, nentity, nrelation, negative_sample_size, mode),
+        TrainDataset(train_triples, nentity, nrelation, negative_sample_size, mode, lambda_loss=lambda_loss),
         batch_size=batch_size,
         shuffle=True,
         num_workers=max(1, cpu_num // 2),
@@ -322,39 +327,52 @@ def main(args):
         kge_model = kge_model.cuda()
     
     if args.do_train:
+        lambda_loss = {
+            'head-batch': args.lambda_lp,
+            'tail-batch': args.lambda_lp,
+            'relation-batch': args.lambda_rp,
+            'domain-batch': args.lambda_dp,
+            'range-batch': args.lambda_dp,
+            'nbe-head-batch': args.lambda_nbe,
+            'nbe-tail-batch': args.lambda_nbe,
+            'nbr-head-batch': args.lambda_nbr,
+            'nbr-tail-batch': args.lambda_nbr
+        }
+
+
         # Set training dataloader iterator
         if args.task == 'all':
             modes = ['head-batch', 'tail-batch', 'relation-batch', 'domain-batch', 'range-batch', 'nbe-head-batch', 'nbe-tail-batch', 'nbr-head-batch', 'nbr-tail-batch']
-            dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode)) for mode in modes]
+            dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode, lambda_loss[mode])) for mode in modes]
             train_iterator = MultiTaskIterator(dataloaders)
         
         elif args.task == 'basic':
             modes = ['head-batch', 'tail-batch', 'relation-batch']
-            dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode)) for mode in modes]
+            dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode, lambda_loss[mode])) for mode in modes]
             train_iterator = MultiTaskIterator(dataloaders)
 
         elif args.task == 'link_prediction':
-            train_dataloader_head = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'head-batch')
-            train_dataloader_tail = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'tail-batch')
+            train_dataloader_head = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'head-batch', lambda_loss['head-batch'])
+            train_dataloader_tail = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'tail-batch', lambda_loss['tail-batch'])
             train_iterator = BidirectionalOneShotIterator(train_dataloader_head, train_dataloader_tail)
 
         elif args.task == 'relation_prediction':
-            train_dataloader_relation = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'relation-batch')
+            train_dataloader_relation = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'relation-batch', lambda_loss['relation-batch'])
             train_iterator = OneShotIterator(train_dataloader_relation)
         
         elif args.task == 'domain_prediction':
-            train_dataloader_domain = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'domain-batch')
-            train_dataloader_range = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'range-batch')
+            train_dataloader_domain = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'domain-batch', lambda_loss['domain-batch'])
+            train_dataloader_range = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'range-batch', lambda_loss['range-batch'])
             train_iterator = BidirectionalOneShotIterator(train_dataloader_domain, train_dataloader_range)
         
         elif args.task == 'entity_neighborhood_prediction':
-            train_dataloader_nbe_head = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbe-head-batch')
-            train_dataloader_nbe_tail = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbe-tail-batch')
+            train_dataloader_nbe_head = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbe-head-batch', lambda_loss['nbe-head-batch'])
+            train_dataloader_nbe_tail = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbe-tail-batch', lambda_loss['nbe-head-batch'])
             train_iterator = BidirectionalOneShotIterator(train_dataloader_nbe_head, train_dataloader_nbe_tail)
         
         elif args.task == 'relation_neighborhood_prediction':
-            train_dataloader_nbr_head = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbr-head-batch')
-            train_dataloader_nbr_tail = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbr-tail-batch')
+            train_dataloader_nbr_head = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbr-head-batch', lambda_loss['nbe-head-batch'])
+            train_dataloader_nbr_tail = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbr-tail-batch', lambda_loss['nbe-head-batch'])
             train_iterator = BidirectionalOneShotIterator(train_dataloader_nbr_head, train_dataloader_nbr_tail)
 
         else:

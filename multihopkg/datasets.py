@@ -92,7 +92,7 @@ class TestDataset(Dataset):
 
         positive_sample = torch.LongTensor((head, relation, tail))
             
-        return positive_sample, negative_sample, filter_bias, self.mode
+        return positive_sample, negative_sample, filter_bias, self.mode, None  # No lambda_loss for test dataset
     
     @staticmethod
     def collate_fn(data):
@@ -100,7 +100,8 @@ class TestDataset(Dataset):
         negative_sample = torch.stack([_[1] for _ in data], dim=0)
         filter_bias = torch.stack([_[2] for _ in data], dim=0)
         mode = data[0][3]
-        return positive_sample, negative_sample, filter_bias, mode
+        lambda_loss = data[0][4]  # None for test dataset
+        return positive_sample, negative_sample, filter_bias, mode, lambda_loss
 
     @staticmethod
     def filter_wildcard_triples(triples: List[Tuple[str]], wildcard_position:str , wildcard_value: int):
@@ -118,7 +119,7 @@ class TestDataset(Dataset):
             raise ValueError("Invalid wildcard position specified.")
 
 class TrainDataset(Dataset):
-    def __init__(self, triples, nentity, nrelation, negative_sample_size, mode):
+    def __init__(self, triples, nentity, nrelation, negative_sample_size, mode, lambda_loss = 1.0):
         self.len = len(triples)
         self.triples = triples
         self.triple_set = set(triples)
@@ -126,6 +127,7 @@ class TrainDataset(Dataset):
         self.nrelation = nrelation # do not include the wildcard relation
         self.negative_sample_size = negative_sample_size
         self.mode = mode
+        self.lambda_loss = lambda_loss
 
         # Filter triples based on the mode
         if self.mode in ['domain-batch', 'nbr-head-batch']:
@@ -225,7 +227,7 @@ class TrainDataset(Dataset):
 
         positive_sample = torch.LongTensor(positive_sample)
             
-        return positive_sample, negative_sample, subsampling_weight, self.mode
+        return positive_sample, negative_sample, subsampling_weight, self.mode, self.lambda_loss
     
     @staticmethod
     def collate_fn(data):
@@ -233,7 +235,8 @@ class TrainDataset(Dataset):
         negative_sample = torch.stack([_[1] for _ in data], dim=0)
         subsample_weight = torch.cat([_[2] for _ in data], dim=0)
         mode = data[0][3]
-        return positive_sample, negative_sample, subsample_weight, mode
+        lambda_loss = data[0][4]
+        return positive_sample, negative_sample, subsample_weight, mode, lambda_loss
     
     @staticmethod
     def count_frequency(triples, start=4):

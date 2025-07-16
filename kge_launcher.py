@@ -25,6 +25,11 @@ def main():
     print(f"Gamma: {config.gamma}")
     print(f"Alpha: {config.alpha}")
     print(f"Learning Rate: {config.learning_rate}")
+    print(f"Lambda LP: {config.lambda_lp}")
+    print(f"Lambda RP: {config.lambda_rp}")
+    print(f"Lambda DP: {config.lambda_dp}")
+    print(f"Lambda NBE: {config.lambda_nbe}")
+    print(f"Lambda NBR: {config.lambda_nbr}")
     print(f"Max Steps: {config.max_steps}")
     print(f"Task: {config.task}")
     print(f"Test Batch Size: {config.test_batch_size}")
@@ -69,6 +74,11 @@ def main():
             "--saving_threshold", str(config.saving_threshold),
             "--random_seed", str(config.seed),
             "--timestamp", timestamp,
+            "--lambda_lp", str(config.lambda_lp),
+            "--lambda_rp", str(config.lambda_rp),
+            "--lambda_dp", str(config.lambda_dp),
+            "--lambda_nbe", str(config.lambda_nbe),
+            "--lambda_nbr", str(config.lambda_nbr),
         ]
 
         if config.additional_params:

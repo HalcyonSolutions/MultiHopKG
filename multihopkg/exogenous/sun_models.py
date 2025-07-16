@@ -539,7 +539,7 @@ class KGEModel(nn.Module):
 
         optimizer.zero_grad()
 
-        positive_sample, negative_sample, subsampling_weight, mode = next(train_iterator)
+        positive_sample, negative_sample, subsampling_weight, mode, lambda_loss = next(train_iterator)
 
         if args.cuda:
             positive_sample = positive_sample.cuda()
@@ -569,10 +569,10 @@ class KGEModel(nn.Module):
         if model.autoencoder_flag:
             score_loss = (positive_sample_loss + negative_sample_loss)/2
             reconstruction_loss = model.autoencoder_lambda * (positive_mse + negative_mse) / 2
-            loss = score_loss + reconstruction_loss
+            loss = lambda_loss*(score_loss + reconstruction_loss)
         else:
             score_loss = positive_sample_loss + negative_sample_loss
-            loss = score_loss
+            loss = lambda_loss*score_loss
         
         if args.regularization != 0.0:
             #Use L3 regularization for ComplEx and DistMult
@@ -770,7 +770,7 @@ class KGEModel(nn.Module):
 
             with torch.no_grad():
                 for test_dataset in test_dataset_list:
-                    for positive_sample, negative_sample, filter_bias, mode in test_dataset:
+                    for positive_sample, negative_sample, filter_bias, mode, _ in test_dataset:
                         if args.cuda:
                             positive_sample = positive_sample.cuda()
                             negative_sample = negative_sample.cuda()
@@ -789,7 +789,15 @@ class KGEModel(nn.Module):
 
                         #Explicitly sort all the entities to ensure that there is no test exposure bias
                         argsort = torch.argsort(score, dim = 1, descending=True)
-
+                        
+                        # prefix = ''
+                        # if mode in ['head-batch', 'tail-batch']:            prefix = 'LP-'
+                        # elif mode in ['relation-batch']:                    prefix = 'REL-'
+                        # elif mode in ['domain-batch', 'range-batch']:       prefix = 'DOM-'
+                        # elif mode in ['nbe-head-batch', 'nbe-tail-batch']:  prefix = 'NBE-'
+                        # elif mode in ['nbr-head-batch', 'nbr-tail-batch']:  prefix = 'NBR-'
+                        # else: raise ValueError('mode %s not supported' % mode)
+                        
                         if mode in ['head-batch', 'domain-batch', 'nbe-head-batch']:
                             positive_arg = positive_sample[:, 0]
                         elif mode in ['tail-batch', 'range-batch', 'nbe-tail-batch']:
