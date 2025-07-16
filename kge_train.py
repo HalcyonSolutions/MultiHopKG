@@ -24,7 +24,8 @@ from multihopkg.utils.data_splitting import read_triple
 from multihopkg.utils.setup import set_seeds
 
 from multihopkg.datasets import TrainDataset
-from multihopkg.datasets import BidirectionalOneShotIterator, MultiTaskIterator, OneShotIterator, build_type_constraints
+from multihopkg.datasets import BidirectionalOneShotIterator, MultiTaskIterator, OneShotIterator
+from multihopkg.datasets import build_type_constraints, build_neighbor_constraints, build_neighbor_rel_constraints
 # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 def parse_args(args=None):
@@ -278,9 +279,15 @@ def main(args):
     #All true triples
     all_true_triples = train_triples + valid_triples + test_triples
     domain_constraints, range_constraints = build_type_constraints(all_true_triples)
+    head_neighborhood_constraints, tail_neighborhood_constraints = build_neighbor_constraints(all_true_triples)
+    head_neighborhood_rel_constraints, tail_neighborhood_rel_constraints = build_neighbor_rel_constraints(all_true_triples)
     constraints = {
         'domain_constraints': domain_constraints,
-        'range_constraints': range_constraints
+        'range_constraints': range_constraints,
+        'head_neighborhood_constraints': head_neighborhood_constraints,
+        'tail_neighborhood_constraints': tail_neighborhood_constraints,
+        'head_neighborhood_rel_constraints': head_neighborhood_rel_constraints,
+        'tail_neighborhood_rel_constraints': tail_neighborhood_rel_constraints
     }
 
     # Logging before initializing the model

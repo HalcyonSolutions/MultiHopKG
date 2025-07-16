@@ -610,7 +610,7 @@ class KGEModel(nn.Module):
 
     
     @staticmethod
-    def test_step(model, test_triples, all_true_triples, args, constraints={}):
+    def test_step(model, test_triples, all_true_triples, args, constraints={}, k_values = [1, 3, 5, 10]):
         '''
         Evaluate the model on test or valid datasets
         '''
@@ -646,7 +646,7 @@ class KGEModel(nn.Module):
             #Otherwise use standard (filtered) MRR, MR, HITS@1, HITS@3, and HITS@10 metrics
             #Prepare dataloader for evaluation
             test_dataset_list = []
-            if args.task in ['link_prediction', 'all']:
+            if args.task in ['link_prediction', 'basic', 'all']:
                 test_dataloader_head = DataLoader(
                     TestDataset(
                         test_triples, 
@@ -675,7 +675,7 @@ class KGEModel(nn.Module):
 
                 test_dataset_list.extend([test_dataloader_head, test_dataloader_tail])
             
-            if args.task in ['relation_prediction', 'all']:
+            if args.task in ['relation_prediction', 'basic', 'all']:
                 test_dataloader_relation = DataLoader(
                     TestDataset(
                         test_triples, 
@@ -801,42 +801,92 @@ class KGEModel(nn.Module):
 
                         for i in range(batch_size):
                             #Notice that argsort is not ranking
+                            ranking_raw = (argsort_raw[i, :] == positive_arg[i]).nonzero()
                             ranking = (argsort[i, :] == positive_arg[i]).nonzero()
-                            assert ranking.size(0) == 1
+                            assert ranking.size(0) == 1 and ranking_raw.size(0) == 1
 
                             #ranking + 1 is the true ranking used in evaluation metrics
+                            ranking_raw = 1 + ranking_raw.item()
                             ranking = 1 + ranking.item()
                             log_entry = {
-                                'MRR': 1.0/ranking,
-                                'MR': float(ranking),
-                                'HITS@1': 1.0 if ranking <= 1 else 0.0,
-                                'HITS@3': 1.0 if ranking <= 3 else 0.0,
-                                'HITS@10': 1.0 if ranking <= 10 else 0.0,
+                                f'MRR': 1.0/ranking,
+                                f'MR': float(ranking)
                             }
+                            
+                            for K in k_values:
+                                log_entry[f'HITS@{K}'] = 1.0 if ranking <= K else 0.0
+                                log_entry[f'RAW-HITS@{K}'] = 1.0 if ranking_raw <= K else 0.0
 
-                            # Sem@K evaluation using raw metrics (only for head/tail prediction)
-                            if mode in {"head-batch", "tail-batch"} and \
+                            # Sem@K evaluation using raw metrics (only for head/tail/domain/range prediction)
+                            if mode in {"head-batch", "tail-batch", "domain-batch", "range-batch"} and \
                                 "domain_constraints" in constraints and \
                                 "range_constraints" in constraints:
                                 rel_id = positive_sample[i, 1].item()
                                 constraint_set = (
                                     constraints["domain_constraints"].get(rel_id, set())
-                                    if mode == 'head-batch' else
+                                    if mode in ['head-batch', 'domain-batch'] else
                                     constraints["range_constraints"].get(rel_id, set())
                                 )
+
                                 N = len(constraint_set)
 
                                 if N > 0:
-                                    for K in [1, 3, 10]:
+                                    for K in k_values:
                                         topk_preds = argsort_raw[i, :K].tolist()
                                         in_k = sum(1 for pred in topk_preds if pred in constraint_set)
                                         denominator = min(K, N)
                                         sem_recall_k = in_k / denominator # equivalent to (in_k / K) * max(1.0, K / N)
                                         log_entry[f'Sem-Recall@{K}'] = sem_recall_k
                                 else:
-                                    for K in [1, 3, 10]:
+                                    for K in k_values:
                                         log_entry[f'Sem-Recall@{K}'] = None
+                            
+                            if mode in {"head-batch", "tail-batch", "nbe-head-batch", "nbe-tail-batch"} and \
+                                "head_neighborhood_constraints" in constraints and \
+                                "tail_neighborhood_constraints" in constraints:
                                 
+                                constraint_set = (
+                                    constraints["head_neighborhood_constraints"].get(positive_arg[i].item(), set())
+                                    if mode in ['head-batch', 'nbe-head-batch'] else
+                                    constraints["tail_neighborhood_constraints"].get(positive_arg[i].item(), set())
+                                )
+
+                                N = len(constraint_set)
+
+                                if N > 0:
+                                    for K in k_values:
+                                        topk_preds = argsort_raw[i, :K].tolist()
+                                        in_k = sum(1 for pred in topk_preds if pred in constraint_set)
+                                        denominator = min(K, N)
+                                        nbe_recall_k = in_k / denominator
+                                        log_entry[f'NBE-Recall@{K}'] = nbe_recall_k
+                                else:
+                                    for K in k_values:
+                                        log_entry[f'NBE-Recall@{K}'] = None
+                            elif mode in {"relation-batch", "nbr-head-batch", "nbr-tail-batch"} and \
+                                "relation_neighborhood_constraints" in constraints:
+                                
+                                if mode == "relation-batch":
+                                    constraint_set = constraints["head_neighborhood_constraints"].get(positive_arg[i].item(), set()) or constraints["tail_neighborhood_constraints"].get(positive_arg[i].item(), set())
+                                else:
+                                    constraint_set = (
+                                        constraints["head_neighborhood_constraints"].get(positive_arg[i].item(), set())
+                                        if mode in ['nbr-head-batch'] else
+                                        constraints["tail_neighborhood_constraints"].get(positive_arg[i].item(), set())
+                                    )
+                                
+                                N = len(constraint_set)
+                                if N > 0:
+                                    for K in k_values:
+                                        topk_preds = argsort_raw[i, :K].tolist()
+                                        in_k = sum(1 for pred in topk_preds if pred in constraint_set)
+                                        denominator = min(K, N)
+                                        nbe_recall_k = in_k / denominator
+                                        log_entry[f'NBR-Recall@{K}'] = nbe_recall_k
+                                else:
+                                    for K in k_values:
+                                        log_entry[f'NBR-Recall@{K}'] = None
+
                             logs.append(log_entry)
 
                         if step % args.test_log_steps == 0:
@@ -845,7 +895,7 @@ class KGEModel(nn.Module):
                         step += 1
 
             # Separate base metrics from Sem@K
-            exclude_keys = {f'Sem-Recall@{K}' for K in [1, 3, 10]}
+            exclude_keys = {f'Sem-Recall@{K}' for K in k_values} | {f'NBE-Recall@{K}' for K in k_values} | {f'NBR-Recall@{K}' for K in k_values}
             all_keys = set(logs[0].keys())
             base_keys = all_keys - exclude_keys
 
@@ -854,8 +904,18 @@ class KGEModel(nn.Module):
                 metrics[metric] = sum([log[metric] for log in logs])/len(logs)
 
             # Aggregate Sem-Recall@K values
-            for K in [1, 3, 10]:
+            for K in k_values:
                 key = f'Sem-Recall@{K}'
+                values = [log[key] for log in logs if key in log and log[key] is not None]
+                if values: metrics[key] = sum(values) / len(values)
+
+            for K in k_values:
+                key = f'NBE-Recall@{K}'
+                values = [log[key] for log in logs if key in log and log[key] is not None]
+                if values: metrics[key] = sum(values) / len(values)
+            
+            for K in k_values:
+                key = f'NBR-Recall@{K}'
                 values = [log[key] for log in logs if key in log and log[key] is not None]
                 if values: metrics[key] = sum(values) / len(values)
 

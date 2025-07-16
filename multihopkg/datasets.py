@@ -439,3 +439,35 @@ def build_type_constraints(triples):
 
     # Convert to normal dicts for serialization safety
     return dict(domain_constraints), dict(range_constraints)
+
+def build_neighbor_constraints(triples):
+    """
+    Given triples, build implicit neighbor constraints for each entity.
+    Returns:
+        neighbor_constraints: entity → set of valid neighboring entities
+    """
+    head_neighbor_constraints = defaultdict(set)
+    tail_neighbor_constraints = defaultdict(set)
+
+    for h, _, t in triples:
+        head_neighbor_constraints[h].add(t)
+        tail_neighbor_constraints[t].add(h) # assumes kg is undirected
+
+    # Convert to normal dict for serialization safety
+    return dict(head_neighbor_constraints), dict(tail_neighbor_constraints)
+
+def build_neighbor_rel_constraints(triples):
+    """ 
+    Given triples, build implicit neighbor relation constraints for each entity.
+    Returns:
+        neighbor_rel_constraints: entity → set of valid neighboring relations
+    """
+    head_neighbor_rel_constraints = defaultdict(set)
+    tail_neighbor_rel_constraints = defaultdict(set)
+
+    for h, r, t in triples:
+        head_neighbor_rel_constraints[h].add(r)
+        tail_neighbor_rel_constraints[t].add(r)
+
+    # Convert to normal dict for serialization safety
+    return dict(head_neighbor_rel_constraints), dict(tail_neighbor_rel_constraints)
