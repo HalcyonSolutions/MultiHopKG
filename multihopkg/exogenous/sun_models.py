@@ -10,7 +10,7 @@ import shutil
 
 import logging
 from collections.abc import Mapping
-from typing import Any, Union, List
+from typing import Any, Union, List, Dict
 
 import numpy as np
 
@@ -836,18 +836,9 @@ class KGEModel(nn.Module):
                                     constraints["range_constraints"].get(rel_id, set())
                                 )
 
-                                N = len(constraint_set)
-
-                                if N > 0:
-                                    for K in k_values:
-                                        topk_preds = argsort_raw[i, :K].tolist()
-                                        in_k = sum(1 for pred in topk_preds if pred in constraint_set)
-                                        denominator = min(K, N)
-                                        sem_recall_k = in_k / denominator # equivalent to (in_k / K) * max(1.0, K / N)
-                                        log_entry[f'Sem-Recall@{K}'] = sem_recall_k
-                                else:
-                                    for K in k_values:
-                                        log_entry[f'Sem-Recall@{K}'] = None
+                                log_entry |= KGEModel.get_recall(
+                                    argsort_raw[i, :], constraint_set, k_values, 'Sem'
+                                )
                             
                             if mode in {"head-batch", "tail-batch", "nbe-head-batch", "nbe-tail-batch"} and \
                                 "head_neighborhood_constraints" in constraints and \
@@ -859,18 +850,10 @@ class KGEModel(nn.Module):
                                     constraints["tail_neighborhood_constraints"].get(positive_arg[i].item(), set())
                                 )
 
-                                N = len(constraint_set)
+                                log_entry |= KGEModel.get_recall(
+                                    argsort_raw[i, :], constraint_set, k_values, 'NBE'
+                                )
 
-                                if N > 0:
-                                    for K in k_values:
-                                        topk_preds = argsort_raw[i, :K].tolist()
-                                        in_k = sum(1 for pred in topk_preds if pred in constraint_set)
-                                        denominator = min(K, N)
-                                        nbe_recall_k = in_k / denominator
-                                        log_entry[f'NBE-Recall@{K}'] = nbe_recall_k
-                                else:
-                                    for K in k_values:
-                                        log_entry[f'NBE-Recall@{K}'] = None
                             elif mode in {"relation-batch", "nbr-head-batch", "nbr-tail-batch"} and \
                                 "relation_neighborhood_constraints" in constraints:
                                 
@@ -883,17 +866,9 @@ class KGEModel(nn.Module):
                                         constraints["tail_neighborhood_constraints"].get(positive_arg[i].item(), set())
                                     )
                                 
-                                N = len(constraint_set)
-                                if N > 0:
-                                    for K in k_values:
-                                        topk_preds = argsort_raw[i, :K].tolist()
-                                        in_k = sum(1 for pred in topk_preds if pred in constraint_set)
-                                        denominator = min(K, N)
-                                        nbe_recall_k = in_k / denominator
-                                        log_entry[f'NBR-Recall@{K}'] = nbe_recall_k
-                                else:
-                                    for K in k_values:
-                                        log_entry[f'NBR-Recall@{K}'] = None
+                                log_entry |= KGEModel.get_recall(
+                                    argsort_raw[i, :], constraint_set, k_values, 'NBR'
+                                )
 
                             logs.append(log_entry)
 
@@ -928,6 +903,35 @@ class KGEModel(nn.Module):
                 if values: metrics[key] = sum(values) / len(values)
 
         return metrics
+
+    @staticmethod
+    def get_recall(
+        argsort_raw: torch.Tensor, constraint_set: set, k_values: List[int], metric_str: str
+        ) -> Dict[str, float]:
+        """
+        Calculate recall for a given set of constraints and argsort_raw.
+        
+        Args:
+            argsort_raw (torch.Tensor): Tensor containing the raw sorted predictions.
+            constraint_set (set): Set of valid entities for recall calculation.
+            k_values (List[int]): List of K values for which to calculate recall.
+            metric_str (str): String to prefix the metric names.
+
+        Returns:
+            Dict[str, float]: Dictionary with recall values for each K.
+        """
+        N = len(constraint_set)
+        if N == 0:
+            return {f'{metric_str}-Recall@{K}': None for K in k_values}
+
+        recalls = {}
+        for K in k_values:
+            topk_preds = argsort_raw[:K].tolist()
+            in_k = sum(1 for pred in topk_preds if pred in constraint_set)
+            denominator = min(K, N)
+            recalls[f'{metric_str}-Recall@{K}'] = in_k / denominator
+        
+        return recalls
 
     #-----------------------------------------------------------------------
     'Translation in Embedding Space'
