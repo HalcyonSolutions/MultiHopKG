@@ -23,24 +23,12 @@ class TestDataset(Dataset):
         self.nrelation = nrelation # do not include the wildcard relation
         self.mode = mode
 
-        # Filter triples based on the mode
-        if self.mode in ['domain-batch', 'nbr-head-batch']:
-            self.triples = self.filter_wildcard_triples(triples, 'tail', self.nentity + 1)
-            self.len = len(self.triples)
-        elif self.mode in ['range-batch', 'nbr-tail-batch']:
-            self.triples = self.filter_wildcard_triples(triples, 'head', self.nentity)
-            self.len = len(self.triples)
-        elif self.mode in ['nbe-head-batch', 'nbe-tail-batch']:
-            self.triples = self.filter_wildcard_triples(triples, 'relation', self.nrelation)
-            self.len = len(self.triples)
-
     def __len__(self):
         return self.len
     
     def __getitem__(self, idx):
         head, relation, tail = self.triples[idx]
 
-        # TODO: Inspect if wildcard id need to be replaced here
         if self.mode == 'head-batch':
             tmp = [(0, candidate_head) if (candidate_head, relation, tail) not in self.triple_set
                    else (-1, head) for candidate_head in range(self.nentity)]
@@ -57,32 +45,26 @@ class TestDataset(Dataset):
             tmp = [(0, candidate_head) if (candidate_head, relation) not in self.domain_set
                    else (-1, head) for candidate_head in range(self.nentity)]
             tmp[head] = (0, head)
-            # tail = self.nentity + 1  # Use a wildcard tail entity
         elif self.mode == 'range-batch':
             tmp = [(0, candidate_tail) if (relation, candidate_tail) not in self.range_set
                    else (-1, tail) for candidate_tail in range(self.nentity)]
             tmp[tail] = (0, tail)
-            # head = self.nentity  # Use a wildcard head entity
         elif self.mode == 'nbe-head-batch':
             tmp = [(0, candidate_head) if (candidate_head, tail) not in self.neighbor_set
                    else (-1, head) for candidate_head in range(self.nentity)]
             tmp[head] = (0, head)
-            # relation = self.nrelation  # Use a wildcard relation
         elif self.mode == 'nbe-tail-batch':
             tmp = [(0, candidate_tail) if (head, candidate_tail) not in self.neighbor_set
                    else (-1, tail) for candidate_tail in range(self.nentity)]
             tmp[tail] = (0, tail)
-            # relation = self.nrelation # Use a wildcard relation
         elif self.mode == 'nbr-head-batch':
             tmp = [(0, candidate_rel) if (head, candidate_rel) not in self.domain_set
                    else (-1, relation) for candidate_rel in range(self.nrelation)]
             tmp[relation] = (0, relation)
-            # tail = self.nentity + 1  # Use a wildcard tail entity
         elif self.mode == 'nbr-tail-batch':
             tmp = [(0, candidate_rel) if (candidate_rel, tail) not in self.range_set
                    else (-1, relation) for candidate_rel in range(self.nrelation)]
             tmp[relation] = (0, relation)
-            # head = self.nentity  # Use a wildcard head entity
         else:
             raise ValueError('negative batch mode %s not supported' % self.mode)
         
@@ -102,21 +84,6 @@ class TestDataset(Dataset):
         mode = data[0][3]
         lambda_loss = data[0][4]  # None for test dataset
         return positive_sample, negative_sample, filter_bias, mode, lambda_loss
-
-    @staticmethod
-    def filter_wildcard_triples(triples: List[Tuple[str]], wildcard_position:str , wildcard_value: int):
-        """
-        Filter triples based on a wildcard position and value.
-        Prevents duplicate triples with wildcard values.
-        """
-        if wildcard_position == 'head':
-            return list(set([(wildcard_value, relation, tail) for (_, relation, tail) in triples]))
-        elif wildcard_position == 'relation':
-            return list(set([(head, wildcard_value, tail) for (head, _, tail) in triples]))
-        elif wildcard_position == 'tail':
-            return list(set([(head, relation, wildcard_value) for (head, relation, _) in triples]))
-        else:
-            raise ValueError("Invalid wildcard position specified.")
 
 class TrainDataset(Dataset):
     def __init__(self, triples, nentity, nrelation, negative_sample_size, mode, lambda_loss = 1.0):

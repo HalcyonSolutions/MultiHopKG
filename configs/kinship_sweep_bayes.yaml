@@ -7,7 +7,7 @@ command:
   - kge_launcher.py
 
 metric:
-  name: Valid_HITS@1  # (higher is better)
+  name: Valid_MultiTask_HITS@1  # (higher is better)
   goal: maximize  # Higher is better
 
 parameters:
@@ -15,7 +15,7 @@ parameters:
     value: train
 
   model:
-    value: RotatE
+    value: TransH
 
   dataset:
     value: KinshipHinton
@@ -39,7 +39,6 @@ parameters:
     max: 16
 
   hidden_dim:
-  hidden_dim:
     distribution: q_log_uniform_values
     q: 1
     min: 4
@@ -55,19 +54,50 @@ parameters:
     min: 0.1
     max: 1.0
 
+  lambda_lp:
+    distribution: uniform
+    min: 0.01
+    max: 1.0
+  
+  lambda_rp:
+    distribution: uniform
+    min: 0.01
+    max: 1.0
+  
+  lambda_dp:
+    distribution: uniform
+    min: 0.01
+    max: 1.0
+  
+  lambda_nbe:
+    distribution: uniform
+    min: 0.01
+    max: 1.0
+  
+  lambda_nbr:
+    distribution: uniform
+    min: 0.01
+    max: 1.0
+
   learning_rate:
-    distribution: log_uniform_values
-    min: 2e-5
-    max: 8e-4
+    distribution: log_uniform # doesn't like scientific notation
+    min: 0.00002
+    max: 0.0008
 
   max_steps:
-    value: 50000
+    values: [50000, 75000, 100000]
+
+  task:
+    values: [all, basic, wild]  # Options: link_prediction, relation_prediction, all
 
   valid_steps:
     value: 5000
 
   test_batch_size:
     value: 16
+
+  clean_up:
+    value: true  # Clean up the model directory after training
 
   wandb_project:
     value: kinship-hinton  # Your wandb project name

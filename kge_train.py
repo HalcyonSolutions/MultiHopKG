@@ -70,12 +70,12 @@ def parse_args(args=None):
     
     parser.add_argument('--save_checkpoint_steps', default=10000, type=int)
     parser.add_argument('--clean_up', action='store_true', help='Clean up checkpoints after training')
-    parser.add_argument('--clean_up_folder', default='store_true', type=str, help='Remove the folder for the model if it is empty after training')
+    parser.add_argument('--clean_up_folder', action='store_true', help='Remove the folder for the model if it is empty after training')
     parser.add_argument('--valid_steps', default=10000, type=int)
     parser.add_argument('--log_steps', default=100, type=int, help='train log every xx steps')
     parser.add_argument('--test_log_steps', default=1000, type=int, help='valid/test log every xx steps')
     
-    parser.add_argument('--task', type=str, choices=['link_prediction', 'relation_prediction', 'domain_prediction', 'entity_neighborhood_prediction', 'relation_neighborhood_prediction', 'basic', 'all'], default='link_prediction',
+    parser.add_argument('--task', type=str, choices=['link_prediction', 'relation_prediction', 'domain_prediction', 'entity_neighborhood_prediction', 'relation_neighborhood_prediction', 'basic', 'wild', 'all'], default='link_prediction',
                         help='Specify which task to train: link_prediction, relation_prediction, domain_prediction, ' \
                         'entity_neighborhood_prediction, relation_neighborhood_prediction, or all (multi-task)')
     parser.add_argument('--lambda_lp', default=1.0, type=float, help='Lambda for link prediction loss')
@@ -165,7 +165,7 @@ def log_metrics(mode, step, metrics):
 
     # Log to wandb as well
     if wandb.run is not None:
-        wandb.log({f"{mode}_{metric}": value for metric, value in metrics.items()}, step=step)    
+        wandb.log({f"{mode}_{metric.replace(' ', '_')}": value for metric, value in metrics.items()}, step=step)    
 
 def reload_embeddings_only(kge_model, init_checkpoint, reload_entities=False, reload_relationship=False):
     """
@@ -315,8 +315,8 @@ def main(args):
         autoencoder_flag=args.autoencoder_flag,
         autoencoder_hidden_dim=args.autoencoder_hidden_dim,
         autoencoder_lambda=args.autoencoder_lambda,
-        wildcard_entity=args.task in ['all', 'domain_prediction', 'relation_neighborhood_prediction'],
-        wildcard_relation=args.task in ['all', 'relation_neighborhood_prediction']
+        wildcard_entity=args.task in ['all', 'wild', 'domain_prediction', 'relation_neighborhood_prediction'],
+        wildcard_relation=args.task in ['all', 'wild', 'entity_neighborhood_prediction']
     )
     
     logging.info('Model Parameter Configuration:')
@@ -348,6 +348,11 @@ def main(args):
         
         elif args.task == 'basic':
             modes = ['head-batch', 'tail-batch', 'relation-batch']
+            dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode, lambda_loss[mode])) for mode in modes]
+            train_iterator = MultiTaskIterator(dataloaders)
+
+        elif args.task == 'wild':
+            modes = ['domain-batch', 'range-batch', 'nbe-head-batch', 'nbe-tail-batch', 'nbr-head-batch', 'nbr-tail-batch']
             dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode, lambda_loss[mode])) for mode in modes]
             train_iterator = MultiTaskIterator(dataloaders)
 
@@ -445,6 +450,7 @@ def main(args):
 
     best_metric_value = None
     best_model_path = None
+    metric_token = f"MultiTask {args.saving_metric}"
     if args.do_train:
         logging.info('learning_rate = %f' % current_learning_rate)
 
@@ -495,7 +501,7 @@ def main(args):
                 log_metrics('Valid', step, metrics)
 
                 # If the metric is present and above the threshold, save the model
-                if args.saving_metric in metrics and metrics[args.saving_metric] > args.saving_threshold:
+                if metric_token in metrics and metrics[metric_token] > args.saving_threshold:
                     
                     save_variable_list = {
                         'step': step, 
@@ -517,7 +523,7 @@ def main(args):
                     if args.saving_metric in metrics:
                         best_metric_value, best_model_path = update_best_model(
                             kge_model, optimizer, save_variable_list, args.save_path,
-                            args.saving_metric, metrics[args.saving_metric], 
+                            args.saving_metric, metrics[f"Overall {args.saving_metric}"], 
                             best_metric_value, best_model_path,
                             autoencoder_flag=args.autoencoder_flag, maximize=True
                         )
@@ -543,7 +549,7 @@ def main(args):
             metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args, constraints=constraints)
             log_metrics('Valid', step, metrics)
 
-            if args.saving_metric in metrics and metrics[args.saving_metric] > args.saving_threshold:
+            if metric_token in metrics and metrics[metric_token] > args.saving_threshold:
                 save_variable_list = {
                     'step': step, 
                     'current_learning_rate': current_learning_rate,
@@ -561,7 +567,7 @@ def main(args):
                 )
                 best_metric_value, best_model_path = update_best_model(
                     kge_model, optimizer, save_variable_list, args.save_path,
-                    args.saving_metric, metrics[args.saving_metric], 
+                    args.saving_metric, metrics[f"Overall {args.saving_metric}"], 
                     best_metric_value, best_model_path,
                     autoencoder_flag=args.autoencoder_flag, maximize=True
                 )

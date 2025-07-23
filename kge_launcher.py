@@ -50,6 +50,37 @@ def main():
         local_time = time.localtime()
         timestamp = time.strftime("%Y%m%d_%H%M%S", local_time)
 
+        task = str(config.task).lower()
+        
+        #
+        if task == "basic":
+            config.lambda_dp = 0.0
+            config.lambda_nbe = 0.0
+            config.lambda_nbr = 0.0
+        elif task == "wild":
+            config.lambda_lp = 0.0
+            config.lambda_rp = 0.0
+        elif task == "relation_prediction":
+            config.lambda_lp = 0.0
+            config.lambda_dp = 0.0
+            config.lambda_nbe = 0.0
+            config.lambda_nbr = 0.0
+        elif task == "domain_prediction":
+            config.lambda_lp = 0.0
+            config.lambda_rp = 0.0
+            config.lambda_nbe = 0.0
+            config.lambda_nbr = 0.0
+        elif task == "entity_neighborhood_prediction":
+            config.lambda_lp = 0.0
+            config.lambda_rp = 0.0
+            config.lambda_dp = 0.0
+            config.lambda_nbr = 0.0
+        elif task == "relation_neighborhood_prediction":
+            config.lambda_lp = 0.0
+            config.lambda_rp = 0.0
+            config.lambda_dp = 0.0
+            config.lambda_nbe = 0.0
+
         cmd = [
             "python", "kge_train.py",
             "--do_train",

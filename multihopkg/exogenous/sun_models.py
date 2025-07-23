@@ -10,7 +10,7 @@ import shutil
 
 import logging
 from collections.abc import Mapping
-from typing import Any, Union, List, Dict
+from typing import Any, Union, List, Dict, Set
 
 import numpy as np
 
@@ -50,6 +50,8 @@ class KGEModel(nn.Module):
         self.nrelation = nrelation if not wildcard_relation else nrelation + 1 # +1 for wildcard relation
         self.hidden_dim = hidden_dim
         self.epsilon = 2.0
+        self.has_wildcard_entity = wildcard_entity
+        self.has_wildcard_relation = wildcard_relation
 
         # Autoencoder 
         self.autoencoder_flag = autoencoder_flag
@@ -644,126 +646,132 @@ class KGEModel(nn.Module):
             
         else:
             #Otherwise use standard (filtered) MRR, MR, HITS@1, HITS@3, and HITS@10 metrics
-            #Prepare dataloader for evaluation
-            test_dataset_list = []
-            if args.task in ['link_prediction', 'basic', 'all']:
-                test_dataloader_head = DataLoader(
-                    TestDataset(
-                        test_triples, 
-                        all_true_triples, 
-                        args.nentity, 
-                        args.nrelation, 
-                        'head-batch'
-                    ), 
-                    batch_size=args.test_batch_size,
-                    num_workers=max(1, args.cpu_num//2), 
-                    collate_fn=TestDataset.collate_fn
-                )
+            #Prepare dataloader for evaluation on all tasks
 
-                test_dataloader_tail = DataLoader(
-                    TestDataset(
-                        test_triples, 
-                        all_true_triples, 
-                        args.nentity, 
-                        args.nrelation, 
-                        'tail-batch'
-                    ), 
-                    batch_size=args.test_batch_size,
-                    num_workers=max(1, args.cpu_num//2), 
-                    collate_fn=TestDataset.collate_fn
-                )
+            test_dataloader_head = DataLoader(
+                TestDataset(
+                    test_triples, 
+                    all_true_triples, 
+                    args.nentity, 
+                    args.nrelation, 
+                    'head-batch'
+                ), 
+                batch_size=args.test_batch_size,
+                num_workers=max(1, args.cpu_num//2), 
+                collate_fn=TestDataset.collate_fn
+            )
 
-                test_dataset_list.extend([test_dataloader_head, test_dataloader_tail])
-            
-            if args.task in ['relation_prediction', 'basic', 'all']:
-                test_dataloader_relation = DataLoader(
-                    TestDataset(
-                        test_triples, 
-                        all_true_triples, 
-                        args.nentity, 
-                        args.nrelation, 'relation-batch'), 
-                    batch_size=args.test_batch_size,
-                    num_workers=max(1, args.cpu_num//2),
-                    collate_fn=TestDataset.collate_fn
-                )
-                test_dataset_list.extend([test_dataloader_relation])
-            
-            if args.task in ['domain_prediction', 'all']:
-                test_dataloader_domain = DataLoader(
-                    TestDataset(
-                        test_triples, 
-                        all_true_triples, 
-                        args.nentity, 
-                        args.nrelation, 'domain-batch'), 
-                    batch_size=args.test_batch_size,
-                    num_workers=max(1, args.cpu_num//2),
-                    collate_fn=TestDataset.collate_fn
-                )
+            test_dataloader_tail = DataLoader(
+                TestDataset(
+                    test_triples, 
+                    all_true_triples, 
+                    args.nentity, 
+                    args.nrelation, 
+                    'tail-batch'
+                ), 
+                batch_size=args.test_batch_size,
+                num_workers=max(1, args.cpu_num//2), 
+                collate_fn=TestDataset.collate_fn
+            )
 
-                test_dataloader_range = DataLoader(
-                    TestDataset(
-                        test_triples, 
-                        all_true_triples, 
-                        args.nentity, 
-                        args.nrelation, 'range-batch'), 
-                    batch_size=args.test_batch_size,
-                    num_workers=max(1, args.cpu_num//2),
-                    collate_fn=TestDataset.collate_fn
-                )
-                test_dataset_list.extend([test_dataloader_domain, test_dataloader_range])
+            test_dataloader_relation = DataLoader(
+                TestDataset(
+                    test_triples, 
+                    all_true_triples, 
+                    args.nentity, 
+                    args.nrelation, 'relation-batch'), 
+                batch_size=args.test_batch_size,
+                num_workers=max(1, args.cpu_num//2),
+                collate_fn=TestDataset.collate_fn
+            )
 
-            if args.task in ['entity_neighborhood_prediction', 'all']:
-                test_dataloader_nbe_head = DataLoader(
-                    TestDataset(
-                        test_triples, 
-                        all_true_triples, 
-                        args.nentity, 
-                        args.nrelation, 'nbe-head-batch'), 
-                    batch_size=args.test_batch_size,
-                    num_workers=max(1, args.cpu_num//2),
-                    collate_fn=TestDataset.collate_fn
-                )
-                
-                test_dataloader_nbe_tail = DataLoader(
-                    TestDataset(
-                        test_triples, 
-                        all_true_triples, 
-                        args.nentity, 
-                        args.nrelation, 'nbe-tail-batch'), 
-                    batch_size=args.test_batch_size,
-                    num_workers=max(1, args.cpu_num//2),
-                    collate_fn=TestDataset.collate_fn
-                )
-                
-                test_dataset_list.extend([test_dataloader_nbe_head, test_dataloader_nbe_tail])
+            test_dataloader_dom = DataLoader(
+                TestDataset(
+                    test_triples, 
+                    all_true_triples, 
+                    args.nentity, 
+                    args.nrelation, 'domain-batch'
+                ), 
+                batch_size=args.test_batch_size,
+                num_workers=max(1, args.cpu_num//2), 
+                collate_fn=TestDataset.collate_fn
+            )
 
-            if args.task in ['relation_neighborhood_prediction', 'all']:
-                test_dataloader_nbr_head = DataLoader(
-                    TestDataset(
-                        test_triples, 
-                        all_true_triples, 
-                        args.nentity, 
-                        args.nrelation, 'nbr-head-batch'), 
-                    batch_size=args.test_batch_size,
-                    num_workers=max(1, args.cpu_num//2),
-                    collate_fn=TestDataset.collate_fn
-                )
-                
-                test_dataloader_nbr_tail = DataLoader(
-                    TestDataset(
-                        test_triples, 
-                        all_true_triples, 
-                        args.nentity, 
-                        args.nrelation, 'nbr-tail-batch'), 
-                    batch_size=args.test_batch_size,
-                    num_workers=max(1, args.cpu_num//2),
-                    collate_fn=TestDataset.collate_fn
-                )
-                
-                test_dataset_list.extend([test_dataloader_nbr_head, test_dataloader_nbr_tail])
+            test_dataloader_range = DataLoader(
+                TestDataset(
+                    test_triples, 
+                    all_true_triples, 
+                    args.nentity, 
+                    args.nrelation, 'range-batch'
+                ), 
+                batch_size=args.test_batch_size,
+                num_workers=max(1, args.cpu_num//2), 
+                collate_fn=TestDataset.collate_fn
+            )
 
-            logs = []
-            semak_logs = []  # <-- Will store only head/tail-batch samples with Sem@K
+            test_dataloader_nbe_head = DataLoader(
+                TestDataset(
+                    test_triples, 
+                    all_true_triples, 
+                    args.nentity, 
+                    args.nrelation, 'nbe-head-batch'
+                ), 
+                batch_size=args.test_batch_size,
+                num_workers=max(1, args.cpu_num//2), 
+                collate_fn=TestDataset.collate_fn
+            )
+
+            test_dataloader_nbe_tail = DataLoader(
+                TestDataset(
+                    test_triples, 
+                    all_true_triples, 
+                    args.nentity, 
+                    args.nrelation, 'nbe-tail-batch'
+                ), 
+                batch_size=args.test_batch_size,
+                num_workers=max(1, args.cpu_num//2), 
+                collate_fn=TestDataset.collate_fn
+            )
+
+            test_dataloader_nbr_head = DataLoader(
+                TestDataset(
+                    test_triples, 
+                    all_true_triples, 
+                    args.nentity, 
+                    args.nrelation, 'nbr-head-batch'
+                ), 
+                batch_size=args.test_batch_size,
+                num_workers=max(1, args.cpu_num//2), 
+                collate_fn=TestDataset.collate_fn
+            )
+
+            test_dataloader_nbr_tail = DataLoader(
+                TestDataset(
+                    test_triples, 
+                    all_true_triples, 
+                    args.nentity, 
+                    args.nrelation, 'nbr-tail-batch'
+                ), 
+                batch_size=args.test_batch_size,
+                num_workers=max(1, args.cpu_num//2), 
+                collate_fn=TestDataset.collate_fn
+            )
+
+            # List of test datasets for different modes
+            test_dataset_list =[
+                test_dataloader_head, 
+                test_dataloader_tail,
+                test_dataloader_relation,
+                test_dataloader_dom,
+                test_dataloader_range,
+                test_dataloader_nbe_head,
+                test_dataloader_nbe_tail,
+                test_dataloader_nbr_head,
+                test_dataloader_nbr_tail
+            ]
+
+            logs = {} # Dict[str, List[Dict[str, Any]]]
+            wildcard_logs = {} # Dict[str, List[Dict[str, Any]]]
 
             step = 0
             total_steps = sum([len(dataset) for dataset in test_dataset_list])
@@ -771,6 +779,14 @@ class KGEModel(nn.Module):
             with torch.no_grad():
                 for test_dataset in test_dataset_list:
                     for positive_sample, negative_sample, filter_bias, mode, _ in test_dataset:
+                        # Assign wildcard entities or relations if applicable
+                        if model.has_wildcard_entity and mode in ["domain-batch", "nbr-head-batch"]:
+                            positive_sample[:, 2] = model.nentity - 1 # tail wildcard entity
+                        elif model.has_wildcard_entity and mode in ["range-batch", "nbr-tail-batch"]:
+                            positive_sample[:, 0] = model.nentity - 2 # head wildcard entity
+                        elif model.has_wildcard_relation and mode in ["nbe-head-batch", "nbe-tail-batch"]:
+                            positive_sample[:, 1] = model.nrelation - 1 # wildcard relation
+
                         if args.cuda:
                             positive_sample = positive_sample.cuda()
                             negative_sample = negative_sample.cuda()
@@ -790,13 +806,21 @@ class KGEModel(nn.Module):
                         #Explicitly sort all the entities to ensure that there is no test exposure bias
                         argsort = torch.argsort(score, dim = 1, descending=True)
                         
-                        # prefix = ''
-                        # if mode in ['head-batch', 'tail-batch']:            prefix = 'LP-'
-                        # elif mode in ['relation-batch']:                    prefix = 'REL-'
-                        # elif mode in ['domain-batch', 'range-batch']:       prefix = 'DOM-'
-                        # elif mode in ['nbe-head-batch', 'nbe-tail-batch']:  prefix = 'NBE-'
-                        # elif mode in ['nbr-head-batch', 'nbr-tail-batch']:  prefix = 'NBR-'
-                        # else: raise ValueError('mode %s not supported' % mode)
+                        wild_tasks = False
+                        if mode in ['head-batch', 'tail-batch']:            
+                            prefix = 'LP'
+                        elif mode in ['relation-batch']:                    
+                            prefix = 'REL'
+                        elif mode in ['domain-batch', 'range-batch']:       
+                            prefix = 'DOM'
+                            wild_tasks = True
+                        elif mode in ['nbe-head-batch', 'nbe-tail-batch']:  
+                            prefix = 'NBE'
+                            wild_tasks = True
+                        elif mode in ['nbr-head-batch', 'nbr-tail-batch']:  
+                            prefix = 'NBR'
+                            wild_tasks = True
+                        else: raise ValueError('mode %s not supported' % mode)
                         
                         if mode in ['head-batch', 'domain-batch', 'nbe-head-batch']:
                             positive_arg = positive_sample[:, 0]
@@ -806,6 +830,17 @@ class KGEModel(nn.Module):
                             positive_arg = positive_sample[:, 1]
                         else:
                             raise ValueError('mode %s not supported' % mode)
+
+                        # Prepare the conditions for Sem@K, NBE@K, and NBR@K evaluation to avoid redundant calculations in loops
+                        sem_k_condition = mode in {"head-batch", "tail-batch", "domain-batch", "range-batch"} and \
+                                "domain_constraints" in constraints and \
+                                "range_constraints" in constraints
+                        nbe_k_condition = mode in {"head-batch", "tail-batch", "nbe-head-batch", "nbe-tail-batch"} and \
+                                "head_neighborhood_constraints" in constraints and \
+                                "tail_neighborhood_constraints" in constraints
+                        nbr_k_condition = mode in {"relation-batch", "nbr-head-batch", "nbr-tail-batch"} and \
+                                "head_neighborhood_rel_constraints" in constraints and \
+                                "tail_neighborhood_rel_constraints" in constraints
 
                         for i in range(batch_size):
                             #Notice that argsort is not ranking
@@ -820,15 +855,20 @@ class KGEModel(nn.Module):
                                 f'MRR': 1.0/ranking,
                                 f'MR': float(ranking)
                             }
+
+                            for K in k_values: log_entry[f'HITS@{K}'] = 1.0 if ranking <= K else 0.0
+
+                            # Only record the raw metrics for the basic tasks (head/tail/relation)
+                            if not wild_tasks:
+                                log_entry |= {
+                                f'RAW-MRR': 1.0/ranking_raw, # useless for wildcard tasks
+                                f'RAW-MR': float(ranking_raw), # useless for wildcard tasks
+                                }
                             
-                            for K in k_values:
-                                log_entry[f'HITS@{K}'] = 1.0 if ranking <= K else 0.0
-                                log_entry[f'RAW-HITS@{K}'] = 1.0 if ranking_raw <= K else 0.0
+                                for K in k_values: log_entry[f'RAW-HITS@{K}'] = 1.0 if ranking_raw <= K else 0.0
 
                             # Sem@K evaluation using raw metrics (only for head/tail/domain/range prediction)
-                            if mode in {"head-batch", "tail-batch", "domain-batch", "range-batch"} and \
-                                "domain_constraints" in constraints and \
-                                "range_constraints" in constraints:
+                            if sem_k_condition:
                                 rel_id = positive_sample[i, 1].item()
                                 constraint_set = (
                                     constraints["domain_constraints"].get(rel_id, set())
@@ -839,11 +879,9 @@ class KGEModel(nn.Module):
                                 log_entry |= KGEModel.get_recall(
                                     argsort_raw[i, :], constraint_set, k_values, 'Sem'
                                 )
-                            
-                            if mode in {"head-batch", "tail-batch", "nbe-head-batch", "nbe-tail-batch"} and \
-                                "head_neighborhood_constraints" in constraints and \
-                                "tail_neighborhood_constraints" in constraints:
-                                
+
+                            # NBE@K evaluation using raw metrics (only for head/tail/nbe-head/nbe-tail prediction)
+                            if nbe_k_condition:
                                 constraint_set = (
                                     constraints["head_neighborhood_constraints"].get(positive_arg[i].item(), set())
                                     if mode in ['head-batch', 'nbe-head-batch'] else
@@ -854,53 +892,58 @@ class KGEModel(nn.Module):
                                     argsort_raw[i, :], constraint_set, k_values, 'NBE'
                                 )
 
-                            elif mode in {"relation-batch", "nbr-head-batch", "nbr-tail-batch"} and \
-                                "relation_neighborhood_constraints" in constraints:
-                                
+                            # NBR@K evaluation using raw metrics (only for relation/nbr-head/nbr-tail prediction)
+                            if nbr_k_condition:
                                 if mode == "relation-batch":
-                                    constraint_set = constraints["head_neighborhood_constraints"].get(positive_arg[i].item(), set()) or constraints["tail_neighborhood_constraints"].get(positive_arg[i].item(), set())
+                                    constraint_set = constraints["head_neighborhood_rel_constraints"].get(positive_arg[i].item(), set()) or constraints["tail_neighborhood_rel_constraints"].get(positive_arg[i].item(), set())
                                 else:
                                     constraint_set = (
-                                        constraints["head_neighborhood_constraints"].get(positive_arg[i].item(), set())
+                                        constraints["head_neighborhood_rel_constraints"].get(positive_arg[i].item(), set())
                                         if mode in ['nbr-head-batch'] else
-                                        constraints["tail_neighborhood_constraints"].get(positive_arg[i].item(), set())
+                                        constraints["tail_neighborhood_rel_constraints"].get(positive_arg[i].item(), set())
                                     )
                                 
                                 log_entry |= KGEModel.get_recall(
                                     argsort_raw[i, :], constraint_set, k_values, 'NBR'
                                 )
 
-                            logs.append(log_entry)
+                            if wild_tasks:
+                                # For wildcard tasks, we log the results with the positive_arg and the corresponding sample so they can be aggregated later
+                                # The positive_arg and corresponding sample are used to create a unique key for the log entry
+                                # This allows us to aggregate results across different wildcard entities/relations
+                                if mode in {"domain-batch", "range-batch"}:
+                                    duo = {f"{positive_arg[i].item()}-{positive_sample[i, 1].item()}": log_entry}
+                                elif mode in {"nbe-head-batch"}:
+                                    duo = {f"{positive_arg[i].item()}-{positive_sample[i, 2].item()}": log_entry}
+                                elif mode in {"nbe-tail-batch"}:
+                                    duo = {f"{positive_arg[i].item()}-{positive_sample[i, 0].item()}": log_entry}
+                                elif mode in {"nbr-head-batch"}:
+                                    duo = {f"{positive_arg[i].item()}-{positive_sample[i, 0].item()}": log_entry}
+                                elif mode in {"nbr-tail-batch"}:
+                                    duo = {f"{positive_arg[i].item()}-{positive_sample[i, 2].item()}": log_entry}
+                                else:
+                                    raise ValueError('mode %s not supported' % mode)
+                                
+                                wildcard_logs.setdefault(prefix, []).append(duo)
+                            else:
+                                logs.setdefault(prefix, []).append(log_entry)
 
                         if step % args.test_log_steps == 0:
                             logging.info('Evaluating the model... (%d/%d)' % (step, total_steps))
 
                         step += 1
 
+            logs |= KGEModel.aggregate_wildcards(wildcard_logs) if wildcard_logs else logs
+
             # Separate base metrics from Sem@K
             exclude_keys = {f'Sem-Recall@{K}' for K in k_values} | {f'NBE-Recall@{K}' for K in k_values} | {f'NBR-Recall@{K}' for K in k_values}
-            all_keys = set(logs[0].keys())
+            all_keys = {key for log_list in logs.values() for log_entry in log_list for key in log_entry.keys()}
             base_keys = all_keys - exclude_keys
 
-            metrics = {}
-            for metric in base_keys:
-                metrics[metric] = sum([log[metric] for log in logs])/len(logs)
-
-            # Aggregate Sem-Recall@K values
-            for K in k_values:
-                key = f'Sem-Recall@{K}'
-                values = [log[key] for log in logs if key in log and log[key] is not None]
-                if values: metrics[key] = sum(values) / len(values)
-
-            for K in k_values:
-                key = f'NBE-Recall@{K}'
-                values = [log[key] for log in logs if key in log and log[key] is not None]
-                if values: metrics[key] = sum(values) / len(values)
-            
-            for K in k_values:
-                key = f'NBR-Recall@{K}'
-                values = [log[key] for log in logs if key in log and log[key] is not None]
-                if values: metrics[key] = sum(values) / len(values)
+            # Calculate overall metrics, task metrics, and recall metrics
+            metrics = KGEModel.calculate_overall_metrics(logs, base_keys)
+            metrics |= KGEModel.calculate_task_metrics(logs, base_keys)
+            metrics |= KGEModel.calculate_recall_metrics(logs, k_values)
 
         return metrics
 
@@ -932,6 +975,108 @@ class KGEModel(nn.Module):
             recalls[f'{metric_str}-Recall@{K}'] = in_k / denominator
         
         return recalls
+    
+    @staticmethod
+    def calculate_overall_metrics(
+        logs: Dict[str, List[Dict[str, Any]]], base_keys: Set[str]
+    ) -> Dict[str, float]:
+        """
+        Calculate overall metrics from the logs.
+        
+        Args:
+            logs (Dict[str, List[Dict[str, Any]]]): Logs containing metrics for each task.
+            base_keys (Set[str]): Set of base metric keys to calculate overall averages.
+
+        Returns:
+            Dict[str, float]: Dictionary with overall average metrics.
+        """
+        # Flatten all log entries from all tasks into a single list
+        all_log_entries = [entry for log_list in logs.values() for entry in log_list]
+
+        # Calculate the overall average for each base metric across all tasks
+        return {
+            f"MultiTask {metric}": sum(log[metric] for log in all_log_entries if metric in log) / 
+                                    sum(1 for log in all_log_entries if metric in log)
+            for metric in base_keys
+        }
+    
+    @staticmethod
+    def calculate_task_metrics(
+        logs: Dict[str, List[Dict[str, Any]]], base_keys: List[int]
+    ) -> Dict[str, float]:
+        """
+        Calculate task-dependent metrics from the logs.
+        
+        Args:
+            logs (Dict[str, List[Dict[str, Any]]]): Logs containing metrics for each task.
+            k_values (List[int]): List of K values for which to calculate recall.
+
+        Returns:
+            Dict[str, float]: Dictionary with task-dependent metrics.
+        """
+        metrics = {}
+        for log_prefix in logs:
+            for metric in base_keys:
+                # Calculate metric for each task (e.g., LP-MRR, REL-MRR)
+                task_logs = logs[log_prefix]
+                values = [log_entry[metric] for log_entry in task_logs if metric in log_entry]
+                if values:
+                    metrics[f"{log_prefix} {metric}"] = sum(values) / len(values)
+        return metrics
+    
+    @staticmethod
+    def calculate_recall_metrics(
+        logs: Dict[str, List[Dict[str, Any]]], k_values: List[int]
+    ) -> Dict[str, float]:
+        """
+        Calculate recall metrics from the logs.
+        
+        Args:
+            logs (Dict[str, List[Dict[str, Any]]]): Logs containing metrics for each task.
+            k_values (List[int]): List of K values for which to calculate recall.
+
+        Returns:
+            Dict[str, float]: Dictionary with recall metrics.
+        """
+        recall_metrics = {}
+        for K in k_values:
+            for recall_type in ['Sem', 'NBE', 'NBR']:
+                key = f'{recall_type}-Recall@{K}'
+                # Collect all non-None values for this key across all log entries
+                values = [
+                    log[key] for log_list in logs.values() 
+                    for log in log_list if key in log and log[key] is not None
+                ]
+                if values:
+                    recall_metrics[key] = sum(values) / len(values)
+        
+        return recall_metrics
+    
+    @staticmethod
+    def aggregate_wildcards(wildcard_logs: Dict[str, List[Dict[str, float]]]) -> Dict[str, List[Dict[str, float]]]:
+        """
+        Aggregate wildcard logs by averaging metrics across all wildcard entities/relations with the same prefix.
+        """
+        logs = {}
+        # --- Aggregate wildcard_logs per prefix and key ---
+        for prefix, entries in wildcard_logs.items():
+            # key_to_logs: Dict[str, List[Dict[str, float]]]
+            key_to_logs = {}
+            for entry in entries:
+                for key, log in entry.items():
+                    key_to_logs.setdefault(key, []).append(log)
+
+            # Average all metrics for each key
+            for key, key_logs in key_to_logs.items():
+                merged_log = {}
+                keys = key_logs[0].keys()
+                for metric in keys:
+                    values = [log[metric] for log in key_logs if metric in log and log[metric] is not None]
+                    if values:
+                        merged_log[metric] = sum(values) / len(values)
+                # Store merged result into logs
+                logs.setdefault(prefix, []).append(merged_log)
+        return logs
 
     #-----------------------------------------------------------------------
     'Translation in Embedding Space'
