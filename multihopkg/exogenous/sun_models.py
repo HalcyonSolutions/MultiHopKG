@@ -943,6 +943,7 @@ class KGEModel(nn.Module):
             # Calculate overall metrics, task metrics, and recall metrics
             metrics = KGEModel.calculate_overall_metrics(logs, base_keys)
             metrics |= KGEModel.calculate_task_metrics(logs, base_keys)
+            metrics |= KGEModel.calculate_task_class_metrics(logs, base_keys)
             metrics |= KGEModel.calculate_recall_metrics(logs, k_values)
 
         return metrics
@@ -1024,6 +1025,35 @@ class KGEModel(nn.Module):
                     metrics[f"{log_prefix} {metric}"] = sum(values) / len(values)
         return metrics
     
+    @staticmethod
+    def calculate_task_class_metrics(
+        logs: Dict[str, List[Dict[str, Any]]], base_keys: str
+    ) -> Dict[str, float]:
+        """
+        Calculate average metrics for each task category (BASIC, WILD) from the logs.
+        
+        Args:
+            logs (Dict[str, List[Dict[str, Any]]]): Logs containing metrics for each task.
+            base_keys (List[str]): List of base metric keys to calculate averages.
+
+        Returns:
+            Dict[str, float]: Dictionary with average metrics for each category.
+        """
+        metrics = {}
+        basic = ['LP', 'REL']
+        wild = ['NBE', 'NBR', 'DOM']
+        for log_prefix in logs:
+            for metric in base_keys:
+                # Calculate metric for each task (e.g., LP-MRR, REL-MRR)
+                task_logs = logs[log_prefix]
+                values = [log_entry[metric] for log_entry in task_logs if metric in log_entry]
+                if values:
+                    if log_prefix in basic:
+                        metrics[f"BASIC {metric}"] = sum(values) / len(values)
+                    elif log_prefix in wild:
+                        metrics[f"WILD {metric}"] = sum(values) / len(values)
+        return metrics
+
     @staticmethod
     def calculate_recall_metrics(
         logs: Dict[str, List[Dict[str, Any]]], k_values: List[int]
