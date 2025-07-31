@@ -252,8 +252,8 @@ class KGEModel(nn.Module):
             gamma=gamma,
             double_entity_embedding=double_entity_embedding,
             double_relation_embedding=double_relation_embedding,
-            uses_wildcard_entity=uses_wildcard_entity,
-            uses_wildcard_relation=uses_wildcard_relation,
+            wildcard_entity=uses_wildcard_entity,
+            wildcard_relation=uses_wildcard_relation,
         )
         
         # Load pretrained embeddings
@@ -895,7 +895,7 @@ class KGEModel(nn.Module):
                             # NBR@K evaluation using raw metrics (only for relation/nbr-head/nbr-tail prediction)
                             if nbr_k_condition:
                                 if mode == "relation-batch":
-                                    constraint_set = constraints["head_neighborhood_rel_constraints"].get(positive_arg[i].item(), set()) or constraints["tail_neighborhood_rel_constraints"].get(positive_arg[i].item(), set())
+                                    constraint_set = constraints["head_neighborhood_rel_constraints"].get(positive_arg[i].item(), set()) | constraints["tail_neighborhood_rel_constraints"].get(positive_arg[i].item(), set())
                                 else:
                                     constraint_set = (
                                         constraints["head_neighborhood_rel_constraints"].get(positive_arg[i].item(), set())
@@ -1002,7 +1002,7 @@ class KGEModel(nn.Module):
     
     @staticmethod
     def calculate_task_metrics(
-        logs: Dict[str, List[Dict[str, Any]]], base_keys: List[int]
+        logs: Dict[str, List[Dict[str, Any]]], base_keys: List[str]
     ) -> Dict[str, float]:
         """
         Calculate task-dependent metrics from the logs.
