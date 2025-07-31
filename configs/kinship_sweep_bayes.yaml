@@ -15,7 +15,7 @@ parameters:
     value: train
 
   model:
-    value: TransH
+    value: TransE
 
   dataset:
     value: KinshipHinton
@@ -80,9 +80,10 @@ parameters:
     max: 1.0
 
   learning_rate:
-    distribution: log_uniform # doesn't like scientific notation
-    min: 0.00002
-    max: 0.0008
+    distribution: q_log_uniform_values
+    q: !!float 1e-05
+    min: !!float 2e-05
+    max: !!float 8e-04
 
   max_steps:
     values: [50000, 75000, 100000]
