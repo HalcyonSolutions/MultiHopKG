@@ -342,40 +342,48 @@ def main(args):
 
         # Set training dataloader iterator
         if args.task == 'all':
+            metric_token = f"MultiTask {args.saving_metric}"
             modes = ['head-batch', 'tail-batch', 'relation-batch', 'domain-batch', 'range-batch', 'nbe-head-batch', 'nbe-tail-batch', 'nbr-head-batch', 'nbr-tail-batch']
             dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode, lambda_loss[mode])) for mode in modes]
             train_iterator = MultiTaskIterator(dataloaders)
         
         elif args.task == 'basic':
+            metric_token = f"BASIC {args.saving_metric}"
             modes = ['head-batch', 'tail-batch', 'relation-batch']
             dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode, lambda_loss[mode])) for mode in modes]
             train_iterator = MultiTaskIterator(dataloaders)
 
         elif args.task == 'wild':
+            metric_token = f"WILD {args.saving_metric}"
             modes = ['domain-batch', 'range-batch', 'nbe-head-batch', 'nbe-tail-batch', 'nbr-head-batch', 'nbr-tail-batch']
             dataloaders = [(mode, create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, mode, lambda_loss[mode])) for mode in modes]
             train_iterator = MultiTaskIterator(dataloaders)
 
         elif args.task == 'link_prediction':
+            metric_token = f"LP {args.saving_metric}"
             train_dataloader_head = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'head-batch', lambda_loss['head-batch'])
             train_dataloader_tail = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'tail-batch', lambda_loss['tail-batch'])
             train_iterator = BidirectionalOneShotIterator(train_dataloader_head, train_dataloader_tail)
 
         elif args.task == 'relation_prediction':
+            metric_token = f"RL {args.saving_metric}"
             train_dataloader_relation = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'relation-batch', lambda_loss['relation-batch'])
             train_iterator = OneShotIterator(train_dataloader_relation)
         
         elif args.task == 'domain_prediction':
+            metric_token = f"DOM {args.saving_metric}"
             train_dataloader_domain = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'domain-batch', lambda_loss['domain-batch'])
             train_dataloader_range = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'range-batch', lambda_loss['range-batch'])
             train_iterator = BidirectionalOneShotIterator(train_dataloader_domain, train_dataloader_range)
         
         elif args.task == 'entity_neighborhood_prediction':
+            metric_token = f"NBE {args.saving_metric}"
             train_dataloader_nbe_head = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbe-head-batch', lambda_loss['nbe-head-batch'])
             train_dataloader_nbe_tail = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbe-tail-batch', lambda_loss['nbe-head-batch'])
             train_iterator = BidirectionalOneShotIterator(train_dataloader_nbe_head, train_dataloader_nbe_tail)
         
         elif args.task == 'relation_neighborhood_prediction':
+            metric_token = f"NBR {args.saving_metric}"
             train_dataloader_nbr_head = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbr-head-batch', lambda_loss['nbe-head-batch'])
             train_dataloader_nbr_tail = create_dataloader(train_triples, nentity, nrelation, args.negative_sample_size, args.batch_size, args.cpu_num, 'nbr-tail-batch', lambda_loss['nbe-head-batch'])
             train_iterator = BidirectionalOneShotIterator(train_dataloader_nbr_head, train_dataloader_nbr_tail)
@@ -395,8 +403,8 @@ def main(args):
             warm_up_steps = args.max_steps // 2
 
         if not(args.do_valid): args.saving_metric = '' # No validation, no saving condition
-        if args.saving_metric not in ['', 'MRR', 'HITS@1', 'HITS@3', 'HITS@10']:
-            logging.warning(f'Invalid saving metrics: {args.saving_metric}. Must be one of MRR, HITS@1, HITS@3, HITS@10 or empty. Setting to empty.')
+        if args.saving_metric not in ['', 'MRR', 'HITS@1', 'HITS@3', 'HITS@5', 'HITS@10', 'RAW-MRR', 'RAW-HITS@1', 'RAW-HITS@3', 'RAW-HITS@5', 'RAW-HITS@10']:
+            logging.warning(f'Invalid saving metrics: {args.saving_metric}. Must be one of MRR, HITS@1, HITS@3, HITS@5, HITS@10 or empty. Setting to empty.')
             args.saving_metric = ''
 
     if args.init_checkpoint:
@@ -450,7 +458,6 @@ def main(args):
 
     best_metric_value = None
     best_model_path = None
-    metric_token = f"MultiTask {args.saving_metric}"
     if args.do_train:
         logging.info('learning_rate = %f' % current_learning_rate)
 
@@ -494,7 +501,8 @@ def main(args):
                     metrics[metric] = sum([log[metric] for log in training_logs])/len(training_logs)
                 log_metrics('Training average', step, metrics)
                 training_logs = []
-                
+            
+            
             if args.do_valid and step % args.valid_steps == 0:
                 logging.info('Evaluating on Valid Dataset...')
                 metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args, constraints=constraints)
@@ -520,13 +528,12 @@ def main(args):
                     )
 
                     # Track the best model (assuming higher is better for your metric; set maximize=False if lower is better)
-                    if args.saving_metric in metrics:
-                        best_metric_value, best_model_path = update_best_model(
-                            kge_model, optimizer, save_variable_list, args.save_path,
-                            args.saving_metric, metrics[f"Overall {args.saving_metric}"], 
-                            best_metric_value, best_model_path,
-                            autoencoder_flag=args.autoencoder_flag, maximize=True
-                        )
+                    best_metric_value, best_model_path = update_best_model(
+                        kge_model, optimizer, save_variable_list, args.save_path,
+                        args.saving_metric, metrics[metric_token], 
+                        best_metric_value, best_model_path,
+                        autoencoder_flag=args.autoencoder_flag, maximize=True
+                    )
         
         # Save the final model
         if args.saving_metric == '':
@@ -565,9 +572,10 @@ def main(args):
                     save_dir, 
                     args.autoencoder_flag
                 )
+
                 best_metric_value, best_model_path = update_best_model(
                     kge_model, optimizer, save_variable_list, args.save_path,
-                    args.saving_metric, metrics[f"Overall {args.saving_metric}"], 
+                    args.saving_metric, metrics[metric_token], 
                     best_metric_value, best_model_path,
                     autoencoder_flag=args.autoencoder_flag, maximize=True
                 )
@@ -575,7 +583,7 @@ def main(args):
             if getattr(args, 'clean_up', False):
                 clean_up_checkpoints(args.save_path)
             if getattr(args, 'clean_up_folder', False):
-                clean_up_folder(args.save_path, ignore_files_types=['.log']) # Remove empty folder or folder with only ignored files (.log)
+                clean_up_folder(args.save_path, ignore_files_types=['.log', '.json']) # Remove empty folder or folder with only ignored files (.log)
         
     if args.do_valid:
         logging.info('Evaluating on Valid Dataset...')
