@@ -1042,16 +1042,26 @@ class KGEModel(nn.Module):
         metrics = {}
         basic = ['LP', 'REL']
         wild = ['NBE', 'NBR', 'DOM']
+        
+        # Accumulate all values for each metric per class
+        basic_metrics = {metric: [] for metric in base_keys}
+        wild_metrics = {metric: [] for metric in base_keys}
         for log_prefix in logs:
             for metric in base_keys:
-                # Calculate metric for each task (e.g., LP-MRR, REL-MRR)
                 task_logs = logs[log_prefix]
                 values = [log_entry[metric] for log_entry in task_logs if metric in log_entry]
                 if values:
                     if log_prefix in basic:
-                        metrics[f"BASIC {metric}"] = sum(values) / len(values)
+                        basic_metrics[metric].extend(values)
                     elif log_prefix in wild:
-                        metrics[f"WILD {metric}"] = sum(values) / len(values)
+                        wild_metrics[metric].extend(values)
+        # Now average
+        for metric, values in basic_metrics.items():
+            if values:
+                metrics[f"BASIC {metric}"] = sum(values) / len(values)
+        for metric, values in wild_metrics.items():
+            if values:
+                metrics[f"WILD {metric}"] = sum(values) / len(values)
         return metrics
 
     @staticmethod
