@@ -264,7 +264,7 @@ class KGEModel(nn.Module):
         if model.model_name == 'TransH':
             entities = model.transfer_transh(model.entity_embedding.data, model.norm_vector.data)
         else:
-            entities = model.entity_embedding.data
+            entities = model.entity_embedding
         model.centroid = calculate_entity_centroid(entities)
         model.embedding_range_min, model.embedding_range_max = calculate_entity_range(entities)
         return model
