@@ -1,5 +1,5 @@
 program: kge_launcher.py
-project: kinship-hinton
+project: fb15k
 method: bayes
 
 command:
@@ -18,7 +18,7 @@ parameters:
     value: TransE
 
   dataset:
-    value: KinshipHinton
+    value: FB15k
 
   gpu_id:
     value: 0
@@ -39,12 +39,15 @@ parameters:
     max: 16
 
   hidden_dim:
-    value: 10
+    distribution: q_log_uniform_values
+    q: 50
+    min: 50
+    max: 200
 
   gamma:
     distribution: uniform
     min: 0.5
-    max: 4.5
+    max: 24.0
 
   alpha:
     distribution: uniform
@@ -86,13 +89,13 @@ parameters:
     distribution: q_log_uniform_values
     q: 25000
     min: 50000
-    max: 100000
+    max: 150000
 
   task:
     values: [all, basic, wild]  # Options: link_prediction, relation_prediction, all
 
   valid_steps:
-    value: 5000
+    value: 10000
 
   test_batch_size:
     value: 16
@@ -101,7 +104,7 @@ parameters:
     value: true  # Clean up the model directory after training
 
   wandb_project:
-    value: kinship-hinton  # Your wandb project name
+    value: fb15k  # Your wandb project name
 
   track:
     value: true  # Always track with wandb
@@ -110,7 +113,7 @@ parameters:
     value: HITS@1  # Metric to save the best model
   
   saving_threshold:
-    value: 0.80  # Threshold for saving the best model
+    value: 0.50  # Threshold for saving the best model
 
   # (Optional) Positional argument 16+
   additional_params:
